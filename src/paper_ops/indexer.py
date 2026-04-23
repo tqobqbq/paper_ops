@@ -11,6 +11,10 @@ def rebuild_indexes(library_root: Path) -> None:
         paper_id = payload["paper_id"]
         direction = payload["direction"]
 
+        if paper_id in papers_index:
+            raise ValueError(
+                f"Duplicate paper_id '{paper_id}' found in {metadata_path}"
+            )
         papers_index[paper_id] = payload
         directions_index.setdefault(direction, []).append(paper_id)
 
@@ -28,6 +32,10 @@ def rebuild_indexes(library_root: Path) -> None:
         encoding="utf-8",
     )
 
+    for stale_readme in (library_root / "library").glob("*/README.md"):
+        if stale_readme.parent.name not in directions_index:
+            stale_readme.unlink()
+
     for direction, paper_ids in sorted(directions_index.items()):
         direction_dir = library_root / "library" / direction
         direction_dir.mkdir(parents=True, exist_ok=True)
@@ -38,7 +46,7 @@ def rebuild_indexes(library_root: Path) -> None:
         )
 
     directions = "\n".join(
-        f"- {direction} ({len(paper_ids)} papers)"
+        f"- `{direction}` ({len(paper_ids)} papers)"
         for direction, paper_ids in sorted(directions_index.items())
     )
     (library_root / "README.md").write_text(

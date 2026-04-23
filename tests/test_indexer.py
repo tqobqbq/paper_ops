@@ -87,5 +87,61 @@ def test_rebuild_indexes_creates_top_level_library_readme(tmp_path: Path):
     top_readme = tmp_path / "README.md"
     assert top_readme.exists()
     readme_text = top_readme.read_text(encoding="utf-8")
-    assert "- attractor_dynamics (2 papers)" in readme_text
-    assert "- predictive_coding (1 papers)" in readme_text
+    assert "- `attractor_dynamics` (2 papers)" in readme_text
+    assert "- `predictive_coding` (1 papers)" in readme_text
+
+
+def test_rebuild_indexes_raises_on_duplicate_paper_id(tmp_path: Path):
+    _write_metadata(
+        tmp_path,
+        "predictive_coding",
+        "2026-duplicate-paper",
+        "Predictive Coding Paper",
+    )
+    _write_metadata(
+        tmp_path,
+        "attractor_dynamics",
+        "2026-duplicate-paper",
+        "Attractor Dynamics Paper",
+    )
+
+    try:
+        rebuild_indexes(tmp_path)
+    except ValueError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("Expected ValueError for duplicate paper_id")
+
+    assert "Duplicate paper_id" in message
+    assert "2026-duplicate-paper" in message
+
+
+def test_rebuild_indexes_removes_stale_direction_readme(tmp_path: Path):
+    _write_metadata(
+        tmp_path,
+        "predictive_coding",
+        "2026-karlsson-difference-predictive-coding-snn",
+        "Difference Predictive Coding for Training Spiking Neural Networks",
+    )
+    _write_metadata(
+        tmp_path,
+        "attractor_dynamics",
+        "2026-zhou-attractor-controllers",
+        "Attractor Controllers for SNNs",
+    )
+
+    rebuild_indexes(tmp_path)
+    stale_readme = tmp_path / "library" / "attractor_dynamics" / "README.md"
+    assert stale_readme.exists()
+
+    metadata_to_remove = (
+        tmp_path
+        / "library"
+        / "attractor_dynamics"
+        / "2026-zhou-attractor-controllers"
+        / "metadata.json"
+    )
+    metadata_to_remove.unlink()
+
+    rebuild_indexes(tmp_path)
+    assert not stale_readme.exists()
