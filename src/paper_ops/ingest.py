@@ -32,6 +32,7 @@ def ingest_local_pdf(
     year: int,
     venue: str | None,
 ) -> IngestResult:
+    source_hash = sha256_file(source_pdf)
     metadata = PaperMetadata(
         title=title,
         authors=authors,
@@ -43,18 +44,28 @@ def ingest_local_pdf(
     paths = paper_paths(library_root, paper_id, direction)
 
     ensure_paper_archive(paths)
-    shutil.copy2(source_pdf, paths.pdf_path)
+    if paths.pdf_path.exists():
+        archived_hash = sha256_file(paths.pdf_path)
+        if archived_hash != source_hash:
+            raise FileExistsError(
+                f"Refusing to overwrite existing archived PDF with different content: {paths.pdf_path}"
+            )
+    else:
+        shutil.copy2(source_pdf, paths.pdf_path)
+
+    status = ProcessingStatus()
+    status.ingested.state = "completed"
 
     record = PaperRecord(
         paper_id=paper_id,
         title=title,
         direction=direction,
-        status=ProcessingStatus(),
+        status=status,
         source=SourceInfo(type="pdf", local_path=str(source_pdf)),
         metadata=metadata,
     )
     payload = record.model_dump()
-    payload["hashes"] = {"pdf_sha256": sha256_file(paths.pdf_path)}
+    payload["hashes"] = {"pdf_sha256": source_hash}
     paths.metadata_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
