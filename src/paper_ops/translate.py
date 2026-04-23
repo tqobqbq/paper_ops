@@ -61,6 +61,17 @@ def translate_pdf_to_markdown(
     response.raise_for_status()
 
     payload = response.json()
+    status = payload.get("status")
+    if status is not None and status != "completed":
+        context_bits: list[str] = [f"status={status!r}"]
+        if "incomplete_details" in payload:
+            context_bits.append(f"incomplete_details={payload.get('incomplete_details')!r}")
+        if "error" in payload:
+            context_bits.append(f"error={payload.get('error')!r}")
+        raise ValueError(
+            "Translation response was not completed: " + ", ".join(context_bits)
+        )
+
     output_text = _extract_output_text(payload)
     if not output_text.strip():
         raise ValueError("No translation text found in API response payload.")

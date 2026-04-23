@@ -98,3 +98,76 @@ def test_translate_pdf_to_markdown_raises_on_empty_translation_payload(
             translate_pdf_to_markdown(pdf_path, output_path, settings)
 
     assert not output_path.exists()
+
+
+def test_translate_pdf_to_markdown_writes_nested_output_content(tmp_path: Path):
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    output_path = tmp_path / "translation_zh.md"
+    settings = RuntimeSettings(
+        codex_root=Path("/root/.codex"),
+        base_url="https://api.example.com/v1",
+        model="gpt-5.4",
+        api_key="secret-key",
+    )
+
+    file_response = Mock()
+    file_response.json.return_value = {"id": "file-123"}
+    file_response.raise_for_status.return_value = None
+
+    translate_response = Mock()
+    translate_response.json.return_value = {
+        "status": "completed",
+        "output": [
+            {
+                "content": [
+                    {"type": "output_text", "text": "# 中文翻译"},
+                    {"type": "output_text", "text": "这是嵌套内容提取测试。"},
+                ]
+            }
+        ],
+    }
+    translate_response.raise_for_status.return_value = None
+
+    with patch(
+        "paper_ops.translate.requests.post",
+        side_effect=[file_response, translate_response],
+    ):
+        translate_pdf_to_markdown(pdf_path, output_path, settings)
+
+    output = output_path.read_text(encoding="utf-8")
+    assert "# 中文翻译" in output
+    assert "这是嵌套内容提取测试。" in output
+
+
+def test_translate_pdf_to_markdown_raises_on_incomplete_status(tmp_path: Path):
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    output_path = tmp_path / "translation_zh.md"
+    settings = RuntimeSettings(
+        codex_root=Path("/root/.codex"),
+        base_url="https://api.example.com/v1",
+        model="gpt-5.4",
+        api_key="secret-key",
+    )
+
+    file_response = Mock()
+    file_response.json.return_value = {"id": "file-123"}
+    file_response.raise_for_status.return_value = None
+
+    translate_response = Mock()
+    translate_response.json.return_value = {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output_text": "partial text that must not be written",
+    }
+    translate_response.raise_for_status.return_value = None
+
+    with patch(
+        "paper_ops.translate.requests.post",
+        side_effect=[file_response, translate_response],
+    ):
+        with pytest.raises(ValueError, match="incomplete"):
+            translate_pdf_to_markdown(pdf_path, output_path, settings)
+
+    assert not output_path.exists()
