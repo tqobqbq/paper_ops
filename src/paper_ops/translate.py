@@ -61,4 +61,7 @@ def translate_pdf_to_markdown(
     response.raise_for_status()
 
     payload = response.json()
-    output_path.write_text(_extract_output_text(payload), encoding="utf-8")
+    output_text = _extract_output_text(payload)
+    if not output_text.strip():
+        raise ValueError("No translation text found in API response payload.")
+    output_path.write_text(output_text, encoding="utf-8")

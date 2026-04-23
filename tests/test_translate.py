@@ -1,6 +1,8 @@
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
+
 from paper_ops.settings import RuntimeSettings
 from paper_ops.translate import translate_pdf_to_markdown
 
@@ -65,3 +67,34 @@ def test_translate_prompt_asset_exists():
     )
     assert prompt_path.exists()
     assert "Chinese" in prompt_path.read_text(encoding="utf-8")
+
+
+def test_translate_pdf_to_markdown_raises_on_empty_translation_payload(
+    tmp_path: Path,
+):
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    output_path = tmp_path / "translation_zh.md"
+    settings = RuntimeSettings(
+        codex_root=Path("/root/.codex"),
+        base_url="https://api.example.com/v1",
+        model="gpt-5.4",
+        api_key="secret-key",
+    )
+
+    file_response = Mock()
+    file_response.json.return_value = {"id": "file-123"}
+    file_response.raise_for_status.return_value = None
+
+    translate_response = Mock()
+    translate_response.json.return_value = {"output": []}
+    translate_response.raise_for_status.return_value = None
+
+    with patch(
+        "paper_ops.translate.requests.post",
+        side_effect=[file_response, translate_response],
+    ):
+        with pytest.raises(ValueError, match="translation text"):
+            translate_pdf_to_markdown(pdf_path, output_path, settings)
+
+    assert not output_path.exists()
