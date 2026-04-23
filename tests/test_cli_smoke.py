@@ -33,3 +33,18 @@ def test_module_entrypoint_shows_top_level_help():
     assert "ingest" in output
     assert "process" in output
     assert "discover" in output
+
+
+def test_cli_lists_discovery_and_ingest_subcommands():
+    runner = CliRunner()
+    result = runner.invoke(app, ["discover", "--help"])
+    assert result.exit_code == 0
+    assert "--source" in result.stdout
+
+
+def test_cli_lists_process_and_ingest_variants():
+    runner = CliRunner()
+    result = runner.invoke(app, ["ingest", "--help"])
+    assert result.exit_code == 0
+    assert "url" in result.stdout
+    assert "pdf" in result.stdout
