@@ -85,3 +85,25 @@ def test_candidate_queue_reject_marks_entry_without_removal(tmp_path: Path):
     assert len(loaded) == 1
     assert loaded[0].candidate_id == created.candidate_id
     assert loaded[0].accepted is False
+
+
+def test_candidate_queue_reject_after_accept_clears_linked_paper_id(tmp_path: Path):
+    queue = CandidateQueue(tmp_path / "queue.json")
+    created = queue.enqueue(
+        title="Accepted Then Rejected Paper",
+        source_url="https://example.com/accepted-then-rejected",
+        source_type="url",
+        discovered_from="manual",
+        priority="medium",
+        matched_keywords=[],
+        reason="manual",
+    )
+
+    queue.accept(created.candidate_id, "2026-example-accepted-paper")
+    queue.reject(created.candidate_id)
+
+    loaded = queue.load()
+    assert len(loaded) == 1
+    assert loaded[0].candidate_id == created.candidate_id
+    assert loaded[0].accepted is False
+    assert loaded[0].linked_paper_id is None

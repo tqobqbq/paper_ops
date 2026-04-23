@@ -81,6 +81,7 @@ class CandidateQueue:
         for entry in entries:
             if entry.candidate_id == candidate_id:
                 entry.accepted = False
+                entry.linked_paper_id = None
                 self.save(entries)
                 return entry
         raise ValueError(f"Candidate not found: {candidate_id}")
