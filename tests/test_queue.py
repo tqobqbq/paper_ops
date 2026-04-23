@@ -59,6 +59,12 @@ def test_candidate_queue_enqueue_dedupes_and_accepts(tmp_path: Path):
     assert accepted.accepted is True
     assert accepted.linked_paper_id == "2026-karlsson-difference-predictive-coding"
 
+    loaded = queue.load()
+    assert len(loaded) == 1
+    assert loaded[0].candidate_id == first.candidate_id
+    assert loaded[0].accepted is True
+    assert loaded[0].linked_paper_id == "2026-karlsson-difference-predictive-coding"
+
 
 def test_candidate_queue_reject_marks_entry_without_removal(tmp_path: Path):
     queue = CandidateQueue(tmp_path / "queue.json")
