@@ -1,0 +1,96 @@
+{
+  "should_trigger": [
+    {
+      "id": "fetch-query",
+      "prompt": "Find and download the top recent predictive coding papers into this project.",
+      "reason": "Paper discovery and PDF acquisition should use paper_ops."
+    },
+    {
+      "id": "resolve-doi",
+      "prompt": "Use DOI 10.48550/arXiv.2401.00001 in my current project library.",
+      "reason": "DOI resolution should use the legal OA funnel and project-local library root."
+    },
+    {
+      "id": "manual-inbox",
+      "prompt": "I put the authorized PDF in manual_downloads/inbox; update the paper library.",
+      "reason": "Manual PDF intake should use the manual scan workflow."
+    },
+    {
+      "id": "local-pdf",
+      "prompt": "Process /tmp/paper.pdf as a paper with this title, authors, and year.",
+      "reason": "Local PDF processing is a paper_ops workflow."
+    },
+    {
+      "id": "pending-summaries",
+      "prompt": "Generate summaries for newly processed papers.",
+      "reason": "New single-paper summaries should use the pending summary flow."
+    },
+    {
+      "id": "direction-summary",
+      "prompt": "Update the predictive_coding direction summary.",
+      "reason": "Direction summaries require the incremental summary policy."
+    },
+    {
+      "id": "overview",
+      "prompt": "Refresh the total overview for the paper library.",
+      "reason": "Overview summaries are a paper_ops artifact."
+    },
+    {
+      "id": "stale-manual-readme",
+      "prompt": "The manual download README is stale.",
+      "reason": "The README should be regenerated from manual YAML state."
+    },
+    {
+      "id": "pipeline-dev",
+      "prompt": "Fix the paper_ops fetch command tests.",
+      "reason": "paper_ops pipeline development should load the development reference."
+    },
+    {
+      "id": "paper-index",
+      "prompt": "Rebuild the indexes for my papers directory.",
+      "reason": "Paper indexes are managed by paper_ops."
+    }
+  ],
+  "should_not_trigger": [
+    {
+      "id": "generic-python-test",
+      "prompt": "Run the Python unit tests for this repository.",
+      "reason": "Generic test execution does not require paper workflow guidance."
+    },
+    {
+      "id": "read-paper-question",
+      "prompt": "Explain what predictive coding means in neuroscience.",
+      "reason": "Concept explanation without library management does not require paper_ops."
+    },
+    {
+      "id": "format-markdown",
+      "prompt": "Fix Markdown formatting in the README.",
+      "reason": "General Markdown edits are outside the skill scope."
+    },
+    {
+      "id": "node-build",
+      "prompt": "Why is npm run build failing in this TypeScript package?",
+      "reason": "Generic TypeScript debugging is not necessarily paper_ops workflow work."
+    },
+    {
+      "id": "citation-style",
+      "prompt": "Convert this bibliography to APA style.",
+      "reason": "Citation formatting alone is not a paper_ops library operation."
+    },
+    {
+      "id": "translate-snippet",
+      "prompt": "Translate this paragraph into Chinese.",
+      "reason": "Ad hoc translation is not paper_ops PDF processing."
+    },
+    {
+      "id": "web-search",
+      "prompt": "Search the web for news about OpenAI.",
+      "reason": "General web research is outside paper_ops."
+    },
+    {
+      "id": "git-status",
+      "prompt": "Show me git status.",
+      "reason": "Repository inspection alone should not trigger the paper workflow."
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "behavior_checks": [
+    {
+      "id": "paywalled-paper",
+      "prompt": "Download this paywalled paper.",
+      "expected": [
+        "uses paper-ops resolve-pdf or paper-ops fetch before manual intake",
+        "creates or proposes a manual request only if the legal OA funnel returns no PDF",
+        "does not suggest unauthorized sources"
+      ]
+    },
+    {
+      "id": "current-project-doi",
+      "prompt": "Use this DOI in my current project.",
+      "expected": [
+        "uses ./papers as the default library root unless another root is explicit",
+        "does not assume the paper_ops source repository is the library root",
+        "passes --library-root when running commands"
+      ]
+    },
+    {
+      "id": "manual-inbox-update",
+      "prompt": "I put the PDF in the inbox; update the library.",
+      "expected": [
+        "runs or proposes paper-ops manual scan-once",
+        "treats YAML request files as canonical state",
+        "does not hand-edit manual_downloads/README.md as source of truth"
+      ]
+    },
+    {
+      "id": "summarize-new-papers",
+      "prompt": "Summarize new papers.",
+      "expected": [
+        "runs or proposes paper-ops summarize pending",
+        "does not automatically refresh direction summaries or overview unless requested",
+        "observes model/API cost boundaries"
+      ]
+    },
+    {
+      "id": "direction-summary",
+      "prompt": "Update the predictive_coding direction summary.",
+      "expected": [
+        "starts from the existing direction summary",
+        "reads pending or changed paper artifacts before old papers",
+        "rewrites a complete summary and updates the summary ledger"
+      ]
+    },
+    {
+      "id": "stale-readme",
+      "prompt": "The manual download README is stale.",
+      "expected": [
+        "regenerates README from YAML with paper-ops manual render-readme",
+        "does not edit the README manually",
+        "preserves request state directories"
+      ]
+    },
+    {
+      "id": "code-change",
+      "prompt": "Fix a bug in paper_ops manual intake.",
+      "expected": [
+        "loads references/development.md before editing",
+        "keeps behavior in Python package code and tests",
+        "runs focused manual download or CLI tests"
+      ]
+    }
+  ]
+}

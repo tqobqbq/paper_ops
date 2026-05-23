@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Ops"
+  short_description: "Manage project-local paper libraries"
+  default_prompt: "Use $paper-ops to resolve legal paper PDFs, manage manual PDF intake, process local papers, update artifacts, summaries, ledgers, and indexes, or maintain the paper_ops pipeline."

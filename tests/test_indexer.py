@@ -91,6 +91,34 @@ def test_rebuild_indexes_creates_top_level_library_readme(tmp_path: Path):
     assert "- `predictive_coding` (1 papers)" in readme_text
 
 
+def test_rebuild_indexes_links_summary_files_when_present(tmp_path: Path):
+    _write_metadata(
+        tmp_path,
+        "predictive_coding",
+        "2026-karlsson-difference-predictive-coding-snn",
+        "Difference Predictive Coding for Training Spiking Neural Networks",
+    )
+    direction_summary_dir = tmp_path / "library" / "predictive_coding"
+    direction_summary_dir.mkdir(parents=True, exist_ok=True)
+    (direction_summary_dir / "predictive_coding_summary_zh.md").write_text(
+        "# predictive coding summary",
+        encoding="utf-8",
+    )
+    (tmp_path / "library" / "overview_zh.md").write_text("# overview", encoding="utf-8")
+
+    rebuild_indexes(tmp_path)
+
+    top_readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    direction_readme = (
+        tmp_path / "library" / "predictive_coding" / "README.md"
+    ).read_text(encoding="utf-8")
+
+    assert "- [全部方向总总结](library/overview_zh.md)" in top_readme
+    assert "- `predictive_coding` (1 papers) - [方向总结](library/predictive_coding/predictive_coding_summary_zh.md)" in top_readme
+    assert "- [方向总结](./predictive_coding_summary_zh.md)" in direction_readme
+    assert "- [全部方向总总结](../overview_zh.md)" in direction_readme
+
+
 def test_rebuild_indexes_raises_on_duplicate_paper_id(tmp_path: Path):
     _write_metadata(
         tmp_path,

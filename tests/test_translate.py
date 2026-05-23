@@ -1,75 +1,11 @@
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import pytest
-
 from paper_ops.settings import RuntimeSettings
-from paper_ops.translate import translate_pdf_to_markdown
+from paper_ops.translate import _extract_output_text, translate_pdf_to_markdown
 
 
-def test_translate_pdf_to_markdown_uploads_file_and_writes_output(tmp_path: Path):
-    pdf_path = tmp_path / "paper.pdf"
-    pdf_path.write_bytes(b"%PDF-1.4 fake")
-    output_path = tmp_path / "translation_zh.md"
-    settings = RuntimeSettings(
-        codex_root=Path("/root/.codex"),
-        base_url="https://api.example.com/v1",
-        model="gpt-5.4",
-        api_key="secret-key",
-    )
-
-    file_response = Mock()
-    file_response.json.return_value = {"id": "file-123"}
-    file_response.raise_for_status.return_value = None
-
-    translate_response = Mock()
-    translate_response.json.return_value = {
-        "output_text": "# 中文翻译\n\n这是测试翻译。"
-    }
-    translate_response.raise_for_status.return_value = None
-
-    with patch(
-        "paper_ops.translate.requests.post",
-        side_effect=[file_response, translate_response],
-    ) as post_mock:
-        translate_pdf_to_markdown(pdf_path, output_path, settings)
-
-    assert output_path.read_text(encoding="utf-8").startswith("# 中文翻译")
-    assert post_mock.call_count == 2
-
-    upload_call = post_mock.call_args_list[0]
-    assert upload_call.args[0] == "https://api.example.com/v1/files"
-    assert upload_call.kwargs["headers"] == {"Authorization": "Bearer secret-key"}
-    assert upload_call.kwargs["data"] == {"purpose": "user_data"}
-    assert upload_call.kwargs["timeout"] == 120
-    assert "file" in upload_call.kwargs["files"]
-    upload_file = upload_call.kwargs["files"]["file"]
-    assert upload_file[0] == "paper.pdf"
-    assert upload_file[2] == "application/pdf"
-
-    response_call = post_mock.call_args_list[1]
-    assert response_call.args[0] == "https://api.example.com/v1/responses"
-    assert response_call.kwargs["headers"] == {
-        "Authorization": "Bearer secret-key",
-        "Content-Type": "application/json",
-    }
-    assert response_call.kwargs["timeout"] == 300
-    assert response_call.kwargs["json"]["model"] == "gpt-5.4"
-    user_input = response_call.kwargs["json"]["input"][0]["content"]
-    assert user_input[0]["type"] == "input_text"
-    assert "Chinese" in user_input[0]["text"]
-    assert user_input[1] == {"type": "input_file", "file_id": "file-123"}
-
-
-def test_translate_prompt_asset_exists():
-    prompt_path = Path(
-        "/root/projects/paper_ops/src/paper_ops/prompts/translate_fulltext.md"
-    )
-    assert prompt_path.exists()
-    assert "Chinese" in prompt_path.read_text(encoding="utf-8")
-
-
-def test_translate_pdf_to_markdown_raises_on_empty_translation_payload(
+def test_translate_pdf_to_markdown_uses_chat_completions_and_writes_output(
     tmp_path: Path,
 ):
     pdf_path = tmp_path / "paper.pdf"
@@ -82,92 +18,78 @@ def test_translate_pdf_to_markdown_raises_on_empty_translation_payload(
         api_key="secret-key",
     )
 
-    file_response = Mock()
-    file_response.json.return_value = {"id": "file-123"}
-    file_response.raise_for_status.return_value = None
-
-    translate_response = Mock()
-    translate_response.json.return_value = {"output": []}
-    translate_response.raise_for_status.return_value = None
-
-    with patch(
-        "paper_ops.translate.requests.post",
-        side_effect=[file_response, translate_response],
-    ):
-        with pytest.raises(ValueError, match="translation text"):
-            translate_pdf_to_markdown(pdf_path, output_path, settings)
-
-    assert not output_path.exists()
-
-
-def test_translate_pdf_to_markdown_writes_nested_output_content(tmp_path: Path):
-    pdf_path = tmp_path / "paper.pdf"
-    pdf_path.write_bytes(b"%PDF-1.4 fake")
-    output_path = tmp_path / "translation_zh.md"
-    settings = RuntimeSettings(
-        codex_root=Path("/root/.codex"),
-        base_url="https://api.example.com/v1",
-        model="gpt-5.4",
-        api_key="secret-key",
-    )
-
-    file_response = Mock()
-    file_response.json.return_value = {"id": "file-123"}
-    file_response.raise_for_status.return_value = None
-
-    translate_response = Mock()
-    translate_response.json.return_value = {
-        "status": "completed",
-        "output": [
+    response = Mock()
+    response.json.return_value = {
+        "choices": [
             {
-                "content": [
-                    {"type": "output_text", "text": "# 中文翻译"},
-                    {"type": "output_text", "text": "这是嵌套内容提取测试。"},
-                ]
+                "message": {
+                    "content": "# 中文翻译\n\n这是测试翻译。",
+                }
             }
-        ],
+        ]
     }
-    translate_response.raise_for_status.return_value = None
+    response.raise_for_status.return_value = None
 
-    with patch(
-        "paper_ops.translate.requests.post",
-        side_effect=[file_response, translate_response],
+    with (
+        patch(
+            "paper_ops.artifact_agents._pdf_text_bundle",
+            return_value="pdf text bundle",
+        ) as pdf_bundle_mock,
+        patch(
+            "paper_ops.artifact_agents._supports_file_upload",
+            return_value=False,
+        ),
+        patch(
+            "paper_ops.artifact_agents.requests.request",
+            return_value=response,
+        ) as request_mock,
     ):
         translate_pdf_to_markdown(pdf_path, output_path, settings)
 
-    output = output_path.read_text(encoding="utf-8")
-    assert "# 中文翻译" in output
-    assert "这是嵌套内容提取测试。" in output
+    assert output_path.read_text(encoding="utf-8").startswith("# 中文翻译")
+    pdf_bundle_mock.assert_called_once_with(pdf_path)
+
+    assert request_mock.call_count == 1
+    call = request_mock.call_args
+    assert call.kwargs["method"] == "POST"
+    assert call.kwargs["url"] == "https://api.example.com/v1/chat/completions"
+    payload = call.kwargs["json"]
+    assert payload["model"] == "gpt-5.4"
+    assert payload["messages"][0]["role"] == "system"
+    assert payload["messages"][1]["role"] == "user"
+    assert "Paper metadata" in payload["messages"][1]["content"]
+    assert "pdf text bundle" in payload["messages"][1]["content"]
+    assert "response_format" not in payload
 
 
-def test_translate_pdf_to_markdown_raises_on_incomplete_status(tmp_path: Path):
-    pdf_path = tmp_path / "paper.pdf"
-    pdf_path.write_bytes(b"%PDF-1.4 fake")
-    output_path = tmp_path / "translation_zh.md"
-    settings = RuntimeSettings(
-        codex_root=Path("/root/.codex"),
-        base_url="https://api.example.com/v1",
-        model="gpt-5.4",
-        api_key="secret-key",
+def test_translate_prompt_asset_exists():
+    prompt_path = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "paper_ops"
+        / "prompts"
+        / "translate_fulltext.md"
     )
+    assert prompt_path.exists()
+    prompt_text = prompt_path.read_text(encoding="utf-8")
+    assert "source of truth" in prompt_text
+    assert "Do not summarize" in prompt_text
 
-    file_response = Mock()
-    file_response.json.return_value = {"id": "file-123"}
-    file_response.raise_for_status.return_value = None
 
-    translate_response = Mock()
-    translate_response.json.return_value = {
-        "status": "incomplete",
-        "incomplete_details": {"reason": "max_output_tokens"},
-        "output_text": "partial text that must not be written",
+def test_extract_output_text_reads_chat_completions_shape():
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": [
+                        {"type": "text", "text": {"value": "# 中文翻译"}},
+                        {"type": "text", "text": "第二段"},
+                    ]
+                }
+            }
+        ]
     }
-    translate_response.raise_for_status.return_value = None
 
-    with patch(
-        "paper_ops.translate.requests.post",
-        side_effect=[file_response, translate_response],
-    ):
-        with pytest.raises(ValueError, match="incomplete"):
-            translate_pdf_to_markdown(pdf_path, output_path, settings)
-
-    assert not output_path.exists()
+    output = _extract_output_text(payload)
+    assert "# 中文翻译" in output
+    assert "第二段" in output

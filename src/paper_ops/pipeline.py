@@ -10,7 +10,11 @@ from paper_ops.indexer import rebuild_indexes
 from paper_ops.ingest import IngestResult, ingest_local_pdf
 from paper_ops.models import PaperPaths, PaperRecord
 from paper_ops.settings import RuntimeSettings, load_runtime_settings
-from paper_ops.summarize import write_summary_files
+from paper_ops.summary_ledger import record_paper_artifacts
+from paper_ops.summarize import (
+    generate_direction_and_overview_summaries,
+    generate_paper_artifacts,
+)
 from paper_ops.translate import translate_pdf_to_markdown
 
 
@@ -48,6 +52,20 @@ def _mark_stage(record: PaperRecord, stage_name: str) -> None:
     stage.last_error = None
 
 
+def _mark_stage_failed(record: PaperRecord, stage_name: str, error: Exception) -> None:
+    stage = getattr(record.status, stage_name)
+    stage.state = "failed"
+    stage.updated_at = _utc_now()
+    stage.last_error = str(error)
+
+
+def _mark_stage_skipped(record: PaperRecord, stage_name: str, reason: str) -> None:
+    stage = getattr(record.status, stage_name)
+    stage.state = "skipped"
+    stage.updated_at = _utc_now()
+    stage.last_error = reason
+
+
 def process_local_pdf(
     source_pdf: Path,
     library_root: Path,
@@ -59,6 +77,8 @@ def process_local_pdf(
     keywords: list[str] | None = None,
     direction: str | None = None,
     settings: RuntimeSettings | None = None,
+    refresh_direction_and_overview_summaries: bool = False,
+    refresh_indexes: bool = True,
 ) -> ProcessResult:
     normalized_keywords = keywords or []
     resolved_direction = direction or classify_direction(
@@ -85,27 +105,95 @@ def process_local_pdf(
     _mark_stage(record, "classified")
     _write_record(ingest_result.paths, record, hashes)
 
-    translate_pdf_to_markdown(
-        pdf_path=ingest_result.paths.pdf_path,
-        output_path=ingest_result.paths.translation_path,
-        settings=runtime_settings,
-    )
-    record, hashes = _load_record(ingest_result.paths)
-    _mark_stage(record, "translated")
-    _write_record(ingest_result.paths, record, hashes)
+    paper_metadata = {
+        "title": title,
+        "authors": authors,
+        "year": year,
+        "venue": venue,
+        "direction": resolved_direction,
+        "keywords": normalized_keywords,
+    }
 
-    translation_text = ingest_result.paths.translation_path.read_text(encoding="utf-8")
-    write_summary_files(
-        paper_dir=ingest_result.paths.paper_dir,
-        metadata={"title": title, "direction": resolved_direction},
-        translation_text=translation_text,
-    )
     record, hashes = _load_record(ingest_result.paths)
-    _mark_stage(record, "summarized")
-    _mark_stage(record, "indexed")
-    _write_record(ingest_result.paths, record, hashes)
+    try:
+        translate_pdf_to_markdown(
+            pdf_path=ingest_result.paths.pdf_path,
+            output_path=ingest_result.paths.translation_path,
+            settings=runtime_settings,
+            metadata=paper_metadata,
+        )
+    except Exception as exc:
+        _mark_stage_failed(record, "translated", exc)
+        _write_record(ingest_result.paths, record, hashes)
+    else:
+        _mark_stage(record, "translated")
+        _write_record(ingest_result.paths, record, hashes)
 
-    rebuild_indexes(library_root)
+    try:
+        artifact_summary = generate_paper_artifacts(
+            pdf_path=ingest_result.paths.pdf_path,
+            paths=ingest_result.paths,
+            metadata=paper_metadata,
+            settings=runtime_settings,
+        )
+    except Exception as exc:
+        record, hashes = _load_record(ingest_result.paths)
+        _mark_stage_failed(record, "summarized", exc)
+        _write_record(ingest_result.paths, record, hashes)
+        raise
+
+    non_translation_failures = artifact_summary.failed
+    if non_translation_failures:
+        formatted_error = "; ".join(
+            f"{name}: {error}" for name, error in sorted(non_translation_failures.items())
+        )
+        record, hashes = _load_record(ingest_result.paths)
+        _mark_stage_failed(record, "summarized", RuntimeError(formatted_error))
+        _write_record(ingest_result.paths, record, hashes)
+        raise RuntimeError(f"Artifact generation failed: {formatted_error}")
+
+    record_paper_artifacts(library_root, ingest_result.paths)
+
+    if refresh_direction_and_overview_summaries:
+        try:
+            generate_direction_and_overview_summaries(
+                library_root=library_root,
+                paper_paths=ingest_result.paths,
+                direction=resolved_direction,
+                settings=runtime_settings,
+            )
+        except Exception as exc:
+            _mark_stage_failed(record, "summarized", exc)
+            _write_record(ingest_result.paths, record, hashes)
+            raise
+        else:
+            _mark_stage(record, "summarized")
+            _write_record(ingest_result.paths, record, hashes)
+    else:
+        record, hashes = _load_record(ingest_result.paths)
+        _mark_stage(record, "summarized")
+        _write_record(ingest_result.paths, record, hashes)
+
+    if refresh_indexes:
+        try:
+            rebuild_indexes(library_root)
+        except Exception as exc:
+            record, hashes = _load_record(ingest_result.paths)
+            _mark_stage_failed(record, "indexed", exc)
+            _write_record(ingest_result.paths, record, hashes)
+            raise
+
+        record, hashes = _load_record(ingest_result.paths)
+        _mark_stage(record, "indexed")
+        _write_record(ingest_result.paths, record, hashes)
+    else:
+        record, hashes = _load_record(ingest_result.paths)
+        _mark_stage_skipped(
+            record,
+            "indexed",
+            "Batch pipeline defers index rebuild until the library-level rebuild step.",
+        )
+        _write_record(ingest_result.paths, record, hashes)
 
     return ProcessResult(
         paper_id=ingest_result.paper_id,

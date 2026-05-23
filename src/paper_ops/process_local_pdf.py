@@ -6,9 +6,8 @@ from pathlib import Path
 import typer
 
 from paper_ops.pipeline import process_local_pdf
-from paper_ops.settings import load_runtime_settings
+from paper_ops.settings import load_runtime_settings, resolve_library_root
 
-DEFAULT_LIBRARY_ROOT = Path("/root/projects/snn_codex/papers")
 app = typer.Typer(help="Run the full local-PDF paper pipeline.")
 
 
@@ -22,17 +21,23 @@ def main(
     abstract: str = "",
     keywords: str = "",
     direction: str | None = None,
-    library_root: Path = DEFAULT_LIBRARY_ROOT,
+    library_root: Path | None = typer.Option(None, "--library-root"),
+    model_provider: str | None = typer.Option(
+        None,
+        help="Select a model provider such as claude.",
+    ),
     model: str | None = None,
     base_url: str | None = None,
 ) -> None:
+    resolved_library_root = resolve_library_root(library_root)
     runtime_settings = load_runtime_settings(
         model_override=model,
         base_url_override=base_url,
+        model_provider_override=model_provider,
     )
     result = process_local_pdf(
         source_pdf=source_pdf,
-        library_root=library_root,
+        library_root=resolved_library_root,
         title=title,
         authors=[item.strip() for item in authors.split(",") if item.strip()],
         year=year,

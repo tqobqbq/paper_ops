@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Vendored paper-search-cli build artifacts
+vendor/paper-search-cli/node_modules/
+vendor/paper-search-cli/dist/
