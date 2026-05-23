@@ -29,5 +29,12 @@ paper-ops fetch "<query>" --dry-run            # preview what would be downloade
 paper-ops discover --query "<query>"           # paper-search-backed discovery → queue
 paper-ops discover --source <feed-url>         # RSS/Atom feed → queue (feedparser)
 paper-ops resolve-pdf --doi 10.0/example       # try paper-search funnel, optional --create-manual-request
+paper-ops expand-citations predictive_coding   # citation/reference expansion from local papers
+paper-ops expand-citations predictive_coding --rank  # add LLM ranking after deterministic dedupe
 paper-ops summarize direction predictive_coding
 ```
+
+`expand-citations` only writes an index artifact by default:
+`<library-root>/indexes/candidate_expansions/<direction>.json`.
+It dedupes against the existing library before any PDF download. Use the generated
+candidate cards to decide what to fetch next.

@@ -260,6 +260,80 @@ def test_build_index_uses_library_root_option(tmp_path: Path, monkeypatch):
     assert '"rebuilt": true' in result.stdout
 
 
+def test_expand_citations_cli_writes_artifact_without_loading_model_settings(
+    tmp_path: Path,
+    monkeypatch,
+):
+    library_root = tmp_path / "papers"
+    seen = {}
+
+    class FakeProvider:
+        def __init__(self, **kwargs):
+            seen["provider_kwargs"] = kwargs
+
+    def fake_expand_citations_for_direction(**kwargs):
+        seen.update(kwargs)
+        output_path = (
+            kwargs["library_root"]
+            / "indexes"
+            / "candidate_expansions"
+            / f"{kwargs['direction']}.json"
+        )
+        output_path.parent.mkdir(parents=True)
+        output_path.write_text(
+            json.dumps(
+                {
+                    "direction": kwargs["direction"],
+                    "seed_count": 1,
+                    "candidate_count": 2,
+                    "llm_ranking": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return output_path
+
+    monkeypatch.setattr("paper_ops.cli.SemanticScholarExpansionProvider", FakeProvider)
+    monkeypatch.setattr(
+        "paper_ops.cli.expand_citations_for_direction",
+        fake_expand_citations_for_direction,
+    )
+    monkeypatch.setattr(
+        "paper_ops.cli.load_runtime_settings",
+        Mock(side_effect=AssertionError("model settings should only load with --rank")),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "expand-citations",
+            "predictive_coding",
+            "--library-root",
+            str(library_root),
+            "--limit",
+            "7",
+            "--citations-per-seed",
+            "3",
+            "--references-per-seed",
+            "4",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["output_path"].endswith("predictive_coding.json")
+    assert payload["candidate_count"] == 2
+    assert seen["library_root"] == library_root
+    assert seen["direction"] == "predictive_coding"
+    assert seen["limit"] == 7
+    assert seen["settings"] is None
+    assert seen["provider_kwargs"] == {
+        "citations_limit": 3,
+        "references_limit": 4,
+    }
+
+
 def test_manual_render_readme_defaults_to_env_library_root(
     tmp_path: Path,
     monkeypatch,

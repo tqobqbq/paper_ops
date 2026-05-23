@@ -3,6 +3,10 @@ from pathlib import Path
 
 import typer
 
+from paper_ops.citation_expansion import (
+    SemanticScholarExpansionProvider,
+    expand_citations_for_direction,
+)
 from paper_ops.discovery import filter_arxiv_candidates, parse_feed_entries
 from paper_ops.indexer import rebuild_indexes
 from paper_ops.manual_downloads import (
@@ -550,6 +554,81 @@ def build_index(
                 "library_root": str(resolved_library_root),
                 "rebuilt": True,
             }
+        )
+    )
+
+
+@app.command("expand-citations")
+def expand_citations(
+    direction: str,
+    library_root: Path | None = typer.Option(None, "--library-root"),
+    limit: int = typer.Option(
+        50,
+        "--limit",
+        help="Maximum candidates to keep in the written expansion artifact.",
+    ),
+    citations_per_seed: int = typer.Option(
+        25,
+        "--citations-per-seed",
+        help="Semantic Scholar citing-paper records to inspect per local seed.",
+    ),
+    references_per_seed: int = typer.Option(
+        25,
+        "--references-per-seed",
+        help="Semantic Scholar reference records to inspect per local seed.",
+    ),
+    rank: bool = typer.Option(
+        False,
+        "--rank",
+        help="Call the configured LLM to rank the deterministic candidate cards.",
+    ),
+    llm_limit: int = typer.Option(
+        30,
+        "--llm-limit",
+        help="Maximum deterministic candidates to send to the LLM ranking step.",
+    ),
+    model_provider: str | None = typer.Option(
+        None,
+        help="Select a model provider such as claude. Only used with --rank.",
+    ),
+    model: str | None = None,
+    base_url: str | None = None,
+) -> None:
+    resolved_library_root = resolve_library_root(library_root)
+    settings = (
+        _load_cli_runtime_settings(
+            model_provider=model_provider,
+            model=model,
+            base_url=base_url,
+        )
+        if rank
+        else None
+    )
+    provider = SemanticScholarExpansionProvider(
+        citations_limit=citations_per_seed,
+        references_limit=references_per_seed,
+    )
+    output_path = expand_citations_for_direction(
+        library_root=resolved_library_root,
+        direction=direction,
+        provider=provider,
+        limit=limit,
+        settings=settings,
+        llm_limit=llm_limit,
+    )
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    typer.echo(
+        json.dumps(
+            {
+                "direction": direction,
+                "library_root": str(resolved_library_root),
+                "output_path": str(output_path),
+                "seed_count": payload.get("seed_count"),
+                "candidate_count": payload.get("candidate_count"),
+                "llm_ranked": bool(payload.get("llm_ranking")),
+            },
+            indent=2,
+            ensure_ascii=False,
         )
     )
 
