@@ -24,6 +24,7 @@ def test_cli_shows_top_level_help():
     assert "discover" in result.stdout
     assert "manual" in result.stdout
     assert "summarize" in result.stdout
+    assert "graph" in result.stdout
 
 
 def test_module_entrypoint_shows_top_level_help():
@@ -198,6 +199,15 @@ def test_cli_lists_summarize_subcommands():
     assert "pending" in result.stdout
 
 
+def test_cli_lists_graph_subcommands():
+    runner = CliRunner()
+    result = runner.invoke(app, ["graph", "--help"])
+    assert result.exit_code == 0
+    assert "update" in result.stdout
+    assert "candidates" in result.stdout
+    assert "review" in result.stdout
+
+
 def test_manual_render_readme_uses_library_root(tmp_path: Path):
     runner = CliRunner()
     result = runner.invoke(
@@ -271,32 +281,24 @@ def test_expand_citations_cli_writes_artifact_without_loading_model_settings(
         def __init__(self, **kwargs):
             seen["provider_kwargs"] = kwargs
 
-    def fake_expand_citations_for_direction(**kwargs):
+    class FakeGraphResult:
+        db_path = library_root / "indexes" / "paper_graph.sqlite"
+        expansion_path = (
+            library_root / "indexes" / "candidate_expansions" / "predictive_coding.json"
+        )
+        seed_count = 1
+        raw_candidate_count = 3
+        candidate_count = 2
+        llm_review_count = 0
+
+    def fake_update_graph_for_direction(**kwargs):
         seen.update(kwargs)
-        output_path = (
-            kwargs["library_root"]
-            / "indexes"
-            / "candidate_expansions"
-            / f"{kwargs['direction']}.json"
-        )
-        output_path.parent.mkdir(parents=True)
-        output_path.write_text(
-            json.dumps(
-                {
-                    "direction": kwargs["direction"],
-                    "seed_count": 1,
-                    "candidate_count": 2,
-                    "llm_ranking": None,
-                }
-            ),
-            encoding="utf-8",
-        )
-        return output_path
+        return FakeGraphResult()
 
     monkeypatch.setattr("paper_ops.cli.SemanticScholarExpansionProvider", FakeProvider)
     monkeypatch.setattr(
-        "paper_ops.cli.expand_citations_for_direction",
-        fake_expand_citations_for_direction,
+        "paper_ops.cli.update_graph_for_direction",
+        fake_update_graph_for_direction,
     )
     monkeypatch.setattr(
         "paper_ops.cli.load_runtime_settings",
@@ -323,7 +325,9 @@ def test_expand_citations_cli_writes_artifact_without_loading_model_settings(
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["output_path"].endswith("predictive_coding.json")
+    assert payload["db_path"].endswith("paper_graph.sqlite")
     assert payload["candidate_count"] == 2
+    assert payload["raw_candidate_count"] == 3
     assert seen["library_root"] == library_root
     assert seen["direction"] == "predictive_coding"
     assert seen["limit"] == 7
@@ -332,6 +336,103 @@ def test_expand_citations_cli_writes_artifact_without_loading_model_settings(
         "citations_limit": 3,
         "references_limit": 4,
     }
+
+
+def test_graph_update_cli_writes_database_without_loading_model_settings(
+    tmp_path: Path,
+    monkeypatch,
+):
+    library_root = tmp_path / "papers"
+    seen = {}
+
+    class FakeProvider:
+        def __init__(self, **kwargs):
+            seen["provider_kwargs"] = kwargs
+
+    class FakeGraphResult:
+        db_path = library_root / "indexes" / "paper_graph.sqlite"
+        expansion_path = (
+            library_root / "indexes" / "candidate_expansions" / "predictive_coding.json"
+        )
+        seed_count = 1
+        raw_candidate_count = 2
+        candidate_count = 2
+        llm_review_count = 0
+
+    def fake_update_graph_for_direction(**kwargs):
+        seen.update(kwargs)
+        return FakeGraphResult()
+
+    monkeypatch.setattr("paper_ops.cli.SemanticScholarExpansionProvider", FakeProvider)
+    monkeypatch.setattr(
+        "paper_ops.cli.update_graph_for_direction",
+        fake_update_graph_for_direction,
+    )
+    monkeypatch.setattr(
+        "paper_ops.cli.load_runtime_settings",
+        Mock(side_effect=AssertionError("model settings should only load with --rank")),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "graph",
+            "update",
+            "predictive_coding",
+            "--library-root",
+            str(library_root),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["db_path"].endswith("paper_graph.sqlite")
+    assert payload["candidate_count"] == 2
+    assert seen["settings"] is None
+
+
+def test_graph_candidates_cli_exports_current_candidates(tmp_path: Path, monkeypatch):
+    library_root = tmp_path / "papers"
+    output_path = (
+        library_root / "indexes" / "graph_candidates" / "predictive_coding.json"
+    )
+
+    def fake_export_graph_candidates(**kwargs):
+        output_path.parent.mkdir(parents=True)
+        output_path.write_text(
+            json.dumps(
+                {
+                    "direction": kwargs["direction"],
+                    "candidate_count": 1,
+                    "candidates": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return output_path
+
+    monkeypatch.setattr(
+        "paper_ops.cli.export_graph_candidates",
+        fake_export_graph_candidates,
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "graph",
+            "candidates",
+            "predictive_coding",
+            "--library-root",
+            str(library_root),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["candidate_count"] == 1
+    assert payload["output_path"].endswith("predictive_coding.json")
 
 
 def test_manual_render_readme_defaults_to_env_library_root(

@@ -26,11 +26,15 @@ pytest tests -v
 ```bash
 paper-ops fetch "predictive coding" --top 5 --sources crossref,arxiv --library-root ./papers
 paper-ops fetch "<query>" --dry-run            # preview what would be downloaded
+paper-ops fetch "<query>" --update-graph       # update graph after successful downloads/processes
 paper-ops discover --query "<query>"           # paper-search-backed discovery → queue
 paper-ops discover --source <feed-url>         # RSS/Atom feed → queue (feedparser)
 paper-ops resolve-pdf --doi 10.0/example       # try paper-search funnel, optional --create-manual-request
 paper-ops expand-citations predictive_coding   # citation/reference expansion from local papers
 paper-ops expand-citations predictive_coding --rank  # add LLM ranking after deterministic dedupe
+paper-ops graph update predictive_coding       # persist citation expansion into SQLite graph database
+paper-ops graph candidates predictive_coding   # export current graph-backed candidates
+paper-ops graph review predictive_coding       # rank existing graph candidates with the configured LLM
 paper-ops summarize direction predictive_coding
 ```
 
@@ -38,3 +42,9 @@ paper-ops summarize direction predictive_coding
 `<library-root>/indexes/candidate_expansions/<direction>.json`.
 It dedupes against the existing library before any PDF download. Use the generated
 candidate cards to decide what to fetch next.
+
+The durable project-level paper graph lives at:
+`<library-root>/indexes/paper_graph.sqlite`. It records local papers, external IDs,
+reference/cited-by relations, relation contexts, deterministic candidates, and LLM
+reviews so repeated expansion runs can be audited instead of treated as disposable
+search output.

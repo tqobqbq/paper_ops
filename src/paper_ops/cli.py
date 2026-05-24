@@ -5,7 +5,6 @@ import typer
 
 from paper_ops.citation_expansion import (
     SemanticScholarExpansionProvider,
-    expand_citations_for_direction,
 )
 from paper_ops.discovery import filter_arxiv_candidates, parse_feed_entries
 from paper_ops.indexer import rebuild_indexes
@@ -21,6 +20,11 @@ from paper_ops.paper_search_client import (
     PaperSearchClient,
     PaperSearchError,
     setup_paper_search,
+)
+from paper_ops.paper_graph import (
+    export_graph_candidates,
+    review_graph_candidates,
+    update_graph_for_direction,
 )
 from paper_ops.pipeline import process_local_pdf as run_local_pdf_pipeline
 from paper_ops.queue import CandidateQueue
@@ -41,10 +45,12 @@ app = typer.Typer(help="Paper ingestion, translation, and discovery pipeline.")
 ingest_app = typer.Typer(help="Ingest URLs, PDFs, or batches into the candidate queue.")
 manual_app = typer.Typer(help="Manage manually downloaded PDF requests.")
 summarize_app = typer.Typer(help="Generate direction or overview summaries.")
+graph_app = typer.Typer(help="Maintain the project-level paper graph database.")
 
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(manual_app, name="manual")
 app.add_typer(summarize_app, name="summarize")
+app.add_typer(graph_app, name="graph")
 
 
 def _candidate_queue(library_root: Path) -> CandidateQueue:
@@ -608,13 +614,126 @@ def expand_citations(
         citations_limit=citations_per_seed,
         references_limit=references_per_seed,
     )
-    output_path = expand_citations_for_direction(
+    result = update_graph_for_direction(
         library_root=resolved_library_root,
         direction=direction,
         provider=provider,
         limit=limit,
         settings=settings,
         llm_limit=llm_limit,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "direction": direction,
+                "library_root": str(resolved_library_root),
+                "db_path": str(result.db_path),
+                "output_path": str(result.expansion_path),
+                "seed_count": result.seed_count,
+                "raw_candidate_count": result.raw_candidate_count,
+                "candidate_count": result.candidate_count,
+                "llm_review_count": result.llm_review_count,
+                "llm_ranked": result.llm_review_count > 0,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
+@graph_app.command("update")
+def graph_update(
+    direction: str,
+    library_root: Path | None = typer.Option(None, "--library-root"),
+    limit: int = typer.Option(
+        50,
+        "--limit",
+        help="Maximum deduped candidates to persist and export.",
+    ),
+    citations_per_seed: int = typer.Option(
+        25,
+        "--citations-per-seed",
+        help="Semantic Scholar citing-paper records to inspect per local seed.",
+    ),
+    references_per_seed: int = typer.Option(
+        25,
+        "--references-per-seed",
+        help="Semantic Scholar reference records to inspect per local seed.",
+    ),
+    rank: bool = typer.Option(
+        False,
+        "--rank",
+        help="Call the configured LLM after deterministic graph update.",
+    ),
+    llm_limit: int = typer.Option(
+        30,
+        "--llm-limit",
+        help="Maximum deterministic candidates to send to the LLM ranking step.",
+    ),
+    model_provider: str | None = typer.Option(
+        None,
+        help="Select a model provider such as claude. Only used with --rank.",
+    ),
+    model: str | None = None,
+    base_url: str | None = None,
+) -> None:
+    resolved_library_root = resolve_library_root(library_root)
+    settings = (
+        _load_cli_runtime_settings(
+            model_provider=model_provider,
+            model=model,
+            base_url=base_url,
+        )
+        if rank
+        else None
+    )
+    provider = SemanticScholarExpansionProvider(
+        citations_limit=citations_per_seed,
+        references_limit=references_per_seed,
+    )
+    result = update_graph_for_direction(
+        library_root=resolved_library_root,
+        direction=direction,
+        provider=provider,
+        limit=limit,
+        settings=settings,
+        llm_limit=llm_limit,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "direction": direction,
+                "library_root": str(resolved_library_root),
+                "db_path": str(result.db_path),
+                "expansion_path": str(result.expansion_path),
+                "seed_count": result.seed_count,
+                "raw_candidate_count": result.raw_candidate_count,
+                "candidate_count": result.candidate_count,
+                "llm_review_count": result.llm_review_count,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
+@graph_app.command("candidates")
+def graph_candidates(
+    direction: str,
+    library_root: Path | None = typer.Option(None, "--library-root"),
+    limit: int = typer.Option(50, "--limit"),
+    state: str | None = typer.Option(
+        None,
+        "--state",
+        help="Optional candidate state filter, e.g. new or llm_reviewed.",
+    ),
+) -> None:
+    resolved_library_root = resolve_library_root(library_root)
+    output_path = export_graph_candidates(
+        library_root=resolved_library_root,
+        direction=direction,
+        limit=limit,
+        state=state,
     )
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     typer.echo(
@@ -623,9 +742,49 @@ def expand_citations(
                 "direction": direction,
                 "library_root": str(resolved_library_root),
                 "output_path": str(output_path),
-                "seed_count": payload.get("seed_count"),
                 "candidate_count": payload.get("candidate_count"),
-                "llm_ranked": bool(payload.get("llm_ranking")),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
+@graph_app.command("review")
+def graph_review(
+    direction: str,
+    library_root: Path | None = typer.Option(None, "--library-root"),
+    limit: int = typer.Option(
+        30,
+        "--limit",
+        help="Maximum existing graph candidates to send to the LLM.",
+    ),
+    model_provider: str | None = typer.Option(
+        None,
+        help="Select a model provider such as claude.",
+    ),
+    model: str | None = None,
+    base_url: str | None = None,
+) -> None:
+    resolved_library_root = resolve_library_root(library_root)
+    settings = _load_cli_runtime_settings(
+        model_provider=model_provider,
+        model=model,
+        base_url=base_url,
+    )
+    result = review_graph_candidates(
+        library_root=resolved_library_root,
+        direction=direction,
+        settings=settings,
+        limit=limit,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "direction": direction,
+                "library_root": str(resolved_library_root),
+                "db_path": str(result.db_path),
+                "reviewed_count": result.reviewed_count,
             },
             indent=2,
             ensure_ascii=False,
@@ -770,6 +929,16 @@ def fetch(
         help="After ingest, refresh direction and overview summaries for touched directions.",
     ),
     dry_run: bool = typer.Option(False, "--dry-run"),
+    update_graph: bool = typer.Option(
+        False,
+        "--update-graph",
+        help="After successful processing, update the paper graph for touched directions.",
+    ),
+    rank_graph: bool = typer.Option(
+        False,
+        "--rank-graph",
+        help="Use with --update-graph to also call the LLM ranking step.",
+    ),
     model_provider: str | None = typer.Option(
         None,
         help="Select a model provider such as claude.",
@@ -909,6 +1078,33 @@ def fetch(
             settings=settings,
         )
 
+    graph_results: list[dict] = []
+    if update_graph and sweep.processed_count > 0:
+        graph_settings = (
+            _load_cli_runtime_settings(
+                model_provider=model_provider,
+                model=model,
+                base_url=base_url,
+            )
+            if rank_graph
+            else None
+        )
+        for d in sorted(successful_directions):
+            graph_result = update_graph_for_direction(
+                library_root=resolved_library_root,
+                direction=d,
+                settings=graph_settings,
+            )
+            graph_results.append(
+                {
+                    "direction": d,
+                    "db_path": str(graph_result.db_path),
+                    "expansion_path": str(graph_result.expansion_path),
+                    "candidate_count": graph_result.candidate_count,
+                    "llm_review_count": graph_result.llm_review_count,
+                }
+            )
+
     typer.echo(
         json.dumps(
             {
@@ -919,6 +1115,7 @@ def fetch(
                 "processed": sweep.processed_count,
                 "failed": sweep.failed_count,
                 "summary_results": summary_results,
+                "graph_results": graph_results,
                 "readme": str(sweep.readme_path),
             },
             indent=2,
