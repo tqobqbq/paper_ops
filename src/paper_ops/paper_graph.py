@@ -15,7 +15,6 @@ from paper_ops.citation_expansion import (
     ExpansionProvider,
     ExpansionSeed,
     SemanticScholarExpansionProvider,
-    dedupe_and_score_candidates,
     load_direction_seeds,
     rank_expansion_candidates,
 )
@@ -31,7 +30,7 @@ PAPER_STATUS_ORDER = {
     "downloaded": 40,
     "local": 50,
 }
-STICKY_CANDIDATE_STATES = {"queued", "downloaded", "skipped"}
+STICKY_CANDIDATE_STATES = {"llm_reviewed", "queued", "downloaded", "skipped"}
 
 
 @dataclass(frozen=True)
@@ -42,6 +41,7 @@ class GraphUpdateResult:
     raw_candidate_count: int
     candidate_count: int
     llm_review_count: int
+    relation_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -260,6 +260,46 @@ def _description_for_candidate(candidate: ExpansionCandidate) -> str:
     if candidate.abstract:
         return candidate.abstract[:500]
     return "; ".join(candidate.reasons)
+
+
+def _append_unique(values: list[str], value: str) -> None:
+    normalized = value.strip()
+    if normalized and normalized not in values:
+        values.append(normalized)
+
+
+def _score_graph_candidate(
+    candidate: ExpansionCandidate,
+    *,
+    source_count: int,
+    relation_count: int,
+    reference_relation_count: int,
+    cited_by_relation_count: int,
+    context_count: int,
+) -> float:
+    score = 0.0
+    score += 3.0 * len(candidate.reasons)
+    score += 1.5 * min(source_count, 5)
+    score += 0.4 * min(relation_count, 10)
+    score += 0.8 * min(reference_relation_count, 5)
+    score += 0.4 * min(cited_by_relation_count, 5)
+    score += 0.6 * min(context_count, 10)
+    score += min(candidate.metadata.citation_count or 0, 200) / 50.0
+    score += min(candidate.metadata.influential_citation_count or 0, 50) / 10.0
+    if candidate.venue:
+        venue = candidate.venue.lower()
+        if venue in {"neurips", "iclr", "icml", "nature", "science"}:
+            score += 2.0
+        elif venue:
+            score += 0.5
+    if candidate.year is not None:
+        if candidate.year >= 2023:
+            score += 1.0
+        elif candidate.year < 2015:
+            score -= 0.5
+    if candidate.abstract:
+        score += 0.5
+    return round(score, 4)
 
 
 def _priority_sort_key(priority: str | None) -> int:
@@ -554,6 +594,22 @@ class PaperGraphStore:
             (paper_key, source, external_id, timestamp),
         )
 
+    def external_ids_for_paper(self, paper_key: str) -> dict[str, str]:
+        rows = self.conn.execute(
+            """
+            SELECT source, external_id
+            FROM paper_external_ids
+            WHERE paper_key = ?
+            ORDER BY source
+            """,
+            (paper_key,),
+        ).fetchall()
+        return {
+            str(row["source"]): str(row["external_id"])
+            for row in rows
+            if str(row["external_id"]).strip()
+        }
+
     def record_relation(
         self,
         *,
@@ -669,7 +725,8 @@ class PaperGraphStore:
               generated_from = excluded.generated_from,
               deterministic_score = excluded.deterministic_score,
               state = CASE
-                WHEN candidates.state IN ('queued', 'downloaded', 'skipped') THEN candidates.state
+                WHEN candidates.state IN ('llm_reviewed', 'queued', 'downloaded', 'skipped')
+                  THEN candidates.state
                 ELSE excluded.state
               END,
               reasons_json = excluded.reasons_json,
@@ -692,6 +749,148 @@ class PaperGraphStore:
             ),
         )
         return candidate_id
+
+    def refresh_candidates_from_graph(
+        self,
+        *,
+        direction: str,
+        limit: int = 50,
+        generated_from: str = "graph",
+    ) -> int:
+        candidates = self._candidate_pool_from_graph(direction=direction)
+        selected = candidates[:limit]
+        for paper_key, candidate in selected:
+            self.record_candidate(
+                paper_key=paper_key,
+                direction=direction,
+                generated_from=generated_from,
+                candidate=candidate,
+            )
+        return len(selected)
+
+    def _candidate_pool_from_graph(
+        self,
+        *,
+        direction: str,
+    ) -> list[tuple[str, ExpansionCandidate]]:
+        rows = self.conn.execute(
+            """
+            SELECT
+              p.paper_key,
+              p.title,
+              p.year,
+              p.doi,
+              p.venue,
+              p.abstract,
+              p.url,
+              p.authors_json,
+              p.metadata_json,
+              COUNT(r.relation_id) AS relation_count,
+              COUNT(DISTINCT r.source_paper_key) AS source_count,
+              SUM(CASE WHEN r.relation_type = 'references' THEN 1 ELSE 0 END)
+                AS reference_relation_count,
+              SUM(CASE WHEN r.relation_type = 'cited_by' THEN 1 ELSE 0 END)
+                AS cited_by_relation_count
+            FROM papers p
+            JOIN paper_relations r ON r.target_paper_key = p.paper_key
+            LEFT JOIN candidates c
+              ON c.paper_key = p.paper_key AND c.direction = ?
+            WHERE r.direction = ?
+              AND p.status NOT IN ('local', 'downloaded', 'skipped')
+              AND (
+                c.state IS NULL
+                OR c.state NOT IN ('queued', 'downloaded', 'skipped')
+              )
+            GROUP BY p.paper_key
+            """,
+            (direction, direction),
+        ).fetchall()
+
+        candidates: list[tuple[str, ExpansionCandidate]] = []
+        for row in rows:
+            paper_key = str(row["paper_key"])
+            relations = self._relations_for_candidate(
+                direction=direction,
+                paper_key=paper_key,
+            )
+            contexts: list[str] = []
+            reasons: list[str] = []
+            for relation in relations:
+                source_title = str(relation["source_title"] or "local paper")
+                relation_type = str(relation["relation_type"])
+                if relation_type == "references":
+                    _append_unique(reasons, f"referenced by local paper: {source_title}")
+                elif relation_type == "cited_by":
+                    _append_unique(reasons, f"cites local paper: {source_title}")
+                else:
+                    _append_unique(reasons, f"related to local paper: {source_title}")
+                for intent in _json_loads(relation["intents_json"], []):
+                    _append_unique(reasons, f"semantic scholar intent: {intent}")
+                for context in _json_loads(relation["contexts_json"], []):
+                    _append_unique(contexts, str(context))
+                description = str(relation["description"] or "")
+                if description:
+                    _append_unique(contexts, description)
+
+            source_ids = self.external_ids_for_paper(paper_key)
+            if row["doi"]:
+                source_ids.setdefault("doi", str(row["doi"]))
+            payload = {
+                "title": row["title"],
+                "year": row["year"],
+                "doi": row["doi"],
+                "venue": row["venue"],
+                "url": row["url"],
+                "authors": _json_loads(row["authors_json"], []),
+                "abstract": row["abstract"],
+                "metadata": _json_loads(row["metadata_json"], {}),
+                "source_ids": source_ids,
+                "reasons": reasons,
+                "relationship_contexts": contexts,
+            }
+            candidate = _candidate_from_payload(payload)
+            candidate.score = _score_graph_candidate(
+                candidate,
+                source_count=int(row["source_count"] or 0),
+                relation_count=int(row["relation_count"] or 0),
+                reference_relation_count=int(row["reference_relation_count"] or 0),
+                cited_by_relation_count=int(row["cited_by_relation_count"] or 0),
+                context_count=len(contexts),
+            )
+            candidates.append((paper_key, candidate))
+
+        candidates.sort(
+            key=lambda item: (
+                -item[1].score,
+                -(item[1].year or 0),
+                item[1].title,
+            )
+        )
+        return candidates
+
+    def _relations_for_candidate(
+        self,
+        *,
+        direction: str,
+        paper_key: str,
+    ) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """
+            SELECT
+              r.relation_type,
+              r.contexts_json,
+              r.intents_json,
+              r.description,
+              r.confidence,
+              source.title AS source_title
+            FROM paper_relations r
+            JOIN papers source ON source.paper_key = r.source_paper_key
+            WHERE r.direction = ?
+              AND r.target_paper_key = ?
+            ORDER BY r.created_at ASC, source.title ASC
+            """,
+            (direction, paper_key),
+        ).fetchall()
 
     def mark_candidate_reviewed(self, candidate_id: str) -> None:
         self.conn.execute(
@@ -796,6 +995,8 @@ class PaperGraphStore:
         if state:
             state_clause = "AND c.state = ?"
             params.append(state)
+        else:
+            state_clause = "AND c.state NOT IN ('queued', 'downloaded', 'skipped')"
         params.append(limit)
         rows = self.conn.execute(
             f"""
@@ -981,6 +1182,50 @@ def _write_expansion_payload(
     return output_path
 
 
+def _write_graph_update_payload(
+    *,
+    library_root: Path,
+    direction: str,
+    seeds: list[ExpansionSeed],
+    provider_name: str,
+    raw_candidate_count: int,
+    discovered_paper_count: int,
+    relation_count: int,
+    db_path: Path,
+) -> Path:
+    output_path = library_root / "indexes" / "graph_updates" / f"{direction}.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "direction": direction,
+        "created_at": _utc_now(),
+        "provider": provider_name,
+        "seed_count": len(seeds),
+        "raw_candidate_count": raw_candidate_count,
+        "discovered_paper_count": discovered_paper_count,
+        "relation_count": relation_count,
+        "dedupe_stage": "identity_upsert_at_discovery",
+        "selection_stage": "deferred_until_candidate_export_or_review",
+        "database": str(db_path),
+        "seeds": [
+            {
+                "paper_id": seed.paper_id,
+                "title": seed.title,
+                "direction": seed.direction,
+                "year": seed.year,
+                "doi": seed.doi,
+                "venue": seed.venue,
+                "paper_dir": str(seed.paper_dir),
+            }
+            for seed in seeds
+        ],
+    }
+    output_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return output_path
+
+
 def _provider_name(provider: ExpansionProvider) -> str:
     name = getattr(provider, "name", provider.__class__.__name__)
     return str(name)
@@ -999,6 +1244,8 @@ def update_graph_for_direction(
     resolved_provider = provider or SemanticScholarExpansionProvider()
     provider_name = _provider_name(resolved_provider)
     raw_candidates: list[ExpansionCandidate] = []
+    discovered_paper_keys: set[str] = set()
+    relation_count = 0
 
     db_path = graph_db_path(library_root)
     with PaperGraphStore(db_path) as store:
@@ -1006,6 +1253,7 @@ def update_graph_for_direction(
             seed_key = store.upsert_seed(seed)
             for candidate in resolved_provider.candidates_for_seed(seed):
                 target_key = store.upsert_candidate_paper(candidate)
+                discovered_paper_keys.add(target_key)
                 raw_candidates.append(candidate)
                 relation_type = _relation_type_from_reasons(candidate.reasons)
                 store.record_relation(
@@ -1020,49 +1268,18 @@ def update_graph_for_direction(
                     confidence=0.9 if candidate.relationship_contexts else 0.6,
                     raw=_candidate_to_dict(candidate),
                 )
-
-        ranked_candidates = dedupe_and_score_candidates(
-            raw_candidates,
-            library_root=library_root,
-            seeds=seeds,
-        )
-        for candidate in ranked_candidates[:limit]:
-            paper_key = store.upsert_candidate_paper(candidate)
-            store.record_candidate(
-                paper_key=paper_key,
-                direction=direction,
-                generated_from=provider_name,
-                candidate=candidate,
-            )
-
-        llm_ranking = None
-        review_count = 0
-        if settings is not None and ranked_candidates:
-            llm_ranking = rank_expansion_candidates(
-                library_root=library_root,
-                direction=direction,
-                seeds=seeds,
-                candidates=ranked_candidates,
-                settings=settings,
-                limit=llm_limit,
-            )
-            review_count = store.record_llm_reviews(
-                direction=direction,
-                candidates=ranked_candidates,
-                ranking=llm_ranking,
-                model=settings.model,
-            )
+                relation_count += 1
 
         store.commit()
 
-    expansion_path = _write_expansion_payload(
+    expansion_path = _write_graph_update_payload(
         library_root=library_root,
         direction=direction,
         seeds=seeds,
-        candidates=ranked_candidates,
         provider_name=provider_name,
-        limit=limit,
-        llm_ranking=llm_ranking,
+        raw_candidate_count=len(raw_candidates),
+        discovered_paper_count=len(discovered_paper_keys),
+        relation_count=relation_count,
         db_path=db_path,
     )
     return GraphUpdateResult(
@@ -1070,8 +1287,9 @@ def update_graph_for_direction(
         expansion_path=expansion_path,
         seed_count=len(seeds),
         raw_candidate_count=len(raw_candidates),
-        candidate_count=min(len(ranked_candidates), limit),
-        llm_review_count=review_count,
+        candidate_count=len(discovered_paper_keys),
+        llm_review_count=0,
+        relation_count=relation_count,
     )
 
 
@@ -1085,6 +1303,10 @@ def review_graph_candidates(
     seeds = load_direction_seeds(library_root, direction)
     db_path = graph_db_path(library_root)
     with PaperGraphStore(db_path) as store:
+        store.refresh_candidates_from_graph(
+            direction=direction,
+            limit=limit,
+        )
         candidates = store.expansion_candidates_for_ranking(
             direction=direction,
             limit=limit,
@@ -1126,6 +1348,11 @@ def export_graph_candidates(
 ) -> Path:
     db_path = graph_db_path(library_root)
     with PaperGraphStore(db_path) as store:
+        store.refresh_candidates_from_graph(
+            direction=direction,
+            limit=limit,
+        )
+        store.commit()
         candidates = store.list_candidates(
             direction=direction,
             limit=limit,

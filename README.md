@@ -32,19 +32,21 @@ paper-ops discover --source <feed-url>         # RSS/Atom feed → queue (feedpa
 paper-ops resolve-pdf --doi 10.0/example       # try paper-search funnel, optional --create-manual-request
 paper-ops expand-citations predictive_coding   # citation/reference expansion from local papers
 paper-ops expand-citations predictive_coding --rank  # add LLM ranking after deterministic dedupe
-paper-ops graph update predictive_coding       # persist citation expansion into SQLite graph database
-paper-ops graph candidates predictive_coding   # export current graph-backed candidates
+paper-ops graph update predictive_coding       # persist paper/relation facts into SQLite graph database
+paper-ops graph candidates predictive_coding   # deterministically refresh/export graph-backed candidates
 paper-ops graph review predictive_coding       # rank existing graph candidates with the configured LLM
 paper-ops summarize direction predictive_coding
 ```
 
-`expand-citations` only writes an index artifact by default:
-`<library-root>/indexes/candidate_expansions/<direction>.json`.
-It dedupes against the existing library before any PDF download. Use the generated
-candidate cards to decide what to fetch next.
+`expand-citations` updates the graph and writes the current candidate view to:
+`<library-root>/indexes/graph_candidates/<direction>.json`.
+Paper identity is deduped as soon as references/citations are discovered; candidate
+screening is recomputed from the graph before any PDF download.
 
 The durable project-level paper graph lives at:
-`<library-root>/indexes/paper_graph.sqlite`. It records local papers, external IDs,
-reference/cited-by relations, relation contexts, deterministic candidates, and LLM
-reviews so repeated expansion runs can be audited instead of treated as disposable
-search output.
+`<library-root>/indexes/paper_graph.sqlite`. `graph update` records local papers,
+external IDs, reference/cited-by relations, and relation contexts incrementally.
+Candidate selection is deferred until the next explicit search step
+(`graph candidates`, `graph review`, or `expand-citations`), so processing a newly
+downloaded batch does not immediately spend LLM calls or lock in a candidate list.
+LLM reviews are stored separately for auditability.

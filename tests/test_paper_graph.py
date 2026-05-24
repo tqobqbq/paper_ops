@@ -93,7 +93,7 @@ class FakeProvider:
         ]
 
 
-def test_update_graph_for_direction_persists_candidates_relations_and_json(
+def test_update_graph_for_direction_persists_relations_and_defers_candidates(
     tmp_path: Path,
 ):
     library_root = tmp_path / "papers"
@@ -118,6 +118,7 @@ def test_update_graph_for_direction_persists_candidates_relations_and_json(
     assert result.seed_count == 1
     assert result.raw_candidate_count == 2
     assert result.candidate_count == 2
+    assert result.relation_count == 2
 
     conn = sqlite3.connect(result.db_path)
     conn.row_factory = sqlite3.Row
@@ -137,15 +138,22 @@ def test_update_graph_for_direction_persists_candidates_relations_and_json(
         candidate_rows = conn.execute(
             "SELECT state, deterministic_score FROM candidates"
         ).fetchall()
-        assert {row["state"] for row in candidate_rows} == {"new"}
-        assert max(row["deterministic_score"] for row in candidate_rows) > 0
+        assert candidate_rows == []
     finally:
         conn.close()
 
     payload = json.loads(result.expansion_path.read_text(encoding="utf-8"))
     assert payload["database"] == str(result.db_path)
-    assert payload["dedupe_stage"] == "before_pdf_download"
-    assert [candidate["title"] for candidate in payload["candidates"]] == [
+    assert payload["dedupe_stage"] == "identity_upsert_at_discovery"
+    assert payload["selection_stage"] == "deferred_until_candidate_export_or_review"
+
+    output_path = export_graph_candidates(
+        library_root=library_root,
+        direction="predictive_coding",
+        limit=10,
+    )
+    candidate_payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert [candidate["title"] for candidate in candidate_payload["candidates"]] == [
         "Candidate A",
         "Candidate B",
     ]
@@ -239,4 +247,5 @@ def test_export_graph_candidates_includes_latest_llm_review(
         for candidate in payload["candidates"]
         if candidate["title"] == "Candidate A"
     )
+    assert exported_a["candidate_state"] == "llm_reviewed"
     assert exported_a["latest_review"]["rationale"] == "Strong citation context."

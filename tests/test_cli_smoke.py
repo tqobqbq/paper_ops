@@ -284,21 +284,38 @@ def test_expand_citations_cli_writes_artifact_without_loading_model_settings(
     class FakeGraphResult:
         db_path = library_root / "indexes" / "paper_graph.sqlite"
         expansion_path = (
-            library_root / "indexes" / "candidate_expansions" / "predictive_coding.json"
+            library_root / "indexes" / "graph_updates" / "predictive_coding.json"
         )
         seed_count = 1
         raw_candidate_count = 3
         candidate_count = 2
         llm_review_count = 0
+        relation_count = 3
 
     def fake_update_graph_for_direction(**kwargs):
         seen.update(kwargs)
         return FakeGraphResult()
 
+    def fake_export_graph_candidates(**kwargs):
+        output_path = (
+            library_root / "indexes" / "graph_candidates" / "predictive_coding.json"
+        )
+        output_path.parent.mkdir(parents=True)
+        output_path.write_text(
+            json.dumps({"direction": kwargs["direction"], "candidate_count": 2}),
+            encoding="utf-8",
+        )
+        seen["export_kwargs"] = kwargs
+        return output_path
+
     monkeypatch.setattr("paper_ops.cli.SemanticScholarExpansionProvider", FakeProvider)
     monkeypatch.setattr(
         "paper_ops.cli.update_graph_for_direction",
         fake_update_graph_for_direction,
+    )
+    monkeypatch.setattr(
+        "paper_ops.cli.export_graph_candidates",
+        fake_export_graph_candidates,
     )
     monkeypatch.setattr(
         "paper_ops.cli.load_runtime_settings",
@@ -328,10 +345,13 @@ def test_expand_citations_cli_writes_artifact_without_loading_model_settings(
     assert payload["db_path"].endswith("paper_graph.sqlite")
     assert payload["candidate_count"] == 2
     assert payload["raw_candidate_count"] == 3
+    assert payload["discovered_paper_count"] == 2
+    assert payload["relation_count"] == 3
     assert seen["library_root"] == library_root
     assert seen["direction"] == "predictive_coding"
-    assert seen["limit"] == 7
-    assert seen["settings"] is None
+    assert "limit" not in seen
+    assert "settings" not in seen
+    assert seen["export_kwargs"]["limit"] == 7
     assert seen["provider_kwargs"] == {
         "citations_limit": 3,
         "references_limit": 4,
@@ -352,12 +372,13 @@ def test_graph_update_cli_writes_database_without_loading_model_settings(
     class FakeGraphResult:
         db_path = library_root / "indexes" / "paper_graph.sqlite"
         expansion_path = (
-            library_root / "indexes" / "candidate_expansions" / "predictive_coding.json"
+            library_root / "indexes" / "graph_updates" / "predictive_coding.json"
         )
         seed_count = 1
         raw_candidate_count = 2
         candidate_count = 2
         llm_review_count = 0
+        relation_count = 2
 
     def fake_update_graph_for_direction(**kwargs):
         seen.update(kwargs)
@@ -388,8 +409,9 @@ def test_graph_update_cli_writes_database_without_loading_model_settings(
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["db_path"].endswith("paper_graph.sqlite")
-    assert payload["candidate_count"] == 2
-    assert seen["settings"] is None
+    assert payload["discovered_paper_count"] == 2
+    assert payload["relation_count"] == 2
+    assert "settings" not in seen
 
 
 def test_graph_candidates_cli_exports_current_candidates(tmp_path: Path, monkeypatch):
