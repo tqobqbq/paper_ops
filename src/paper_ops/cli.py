@@ -22,8 +22,14 @@ from paper_ops.paper_search_client import (
     setup_paper_search,
 )
 from paper_ops.paper_graph import (
+    enqueue_graph_downloads,
     export_graph_candidates,
+    export_graph_snapshot,
+    export_literature_map,
+    mark_graph_candidate_processed,
+    mark_graph_candidate_processing_failed,
     review_graph_candidates,
+    sync_graph,
     update_graph_for_direction,
 )
 from paper_ops.pipeline import process_local_pdf as run_local_pdf_pipeline
@@ -188,6 +194,36 @@ def _manual_processor(
     return process_request
 
 
+def _graph_after_processed(library_root: Path):
+    def after_processed(
+        request: ManualDownloadRequest,
+        result: ManualProcessResult,
+    ) -> None:
+        if not request.candidate_id:
+            return
+        mark_graph_candidate_processed(
+            library_root=library_root,
+            candidate_id=request.candidate_id,
+            local_paper_id=result.paper_id,
+            paper_dir=result.paper_dir,
+        )
+
+    return after_processed
+
+
+def _graph_after_failed(library_root: Path):
+    def after_failed(request: ManualDownloadRequest, exc: Exception) -> None:
+        if not request.candidate_id:
+            return
+        mark_graph_candidate_processing_failed(
+            library_root=library_root,
+            candidate_id=request.candidate_id,
+            error=str(exc),
+        )
+
+    return after_failed
+
+
 @manual_app.command("render-readme")
 def manual_render_readme(
     library_root: Path | None = typer.Option(None, "--library-root"),
@@ -253,6 +289,8 @@ def manual_scan_once(
             model=model,
             base_url=base_url,
         ),
+        after_processed=_graph_after_processed(resolved_library_root),
+        after_failed=_graph_after_failed(resolved_library_root),
     )
     typer.echo(
         json.dumps(
@@ -287,6 +325,8 @@ def manual_watch(
             base_url=base_url,
         ),
         interval_seconds=interval_seconds,
+        after_processed=_graph_after_processed(resolved_library_root),
+        after_failed=_graph_after_failed(resolved_library_root),
     )
 
 
@@ -723,6 +763,35 @@ def graph_update(
     )
 
 
+@graph_app.command("sync")
+def graph_sync(
+    library_root: Path | None = typer.Option(None, "--library-root"),
+) -> None:
+    resolved_library_root = resolve_library_root(library_root)
+    result = sync_graph(library_root=resolved_library_root)
+    typer.echo(
+        json.dumps(
+            {
+                "library_root": str(resolved_library_root),
+                "db_path": str(result.db_path),
+                "directions": result.directions,
+                "results": [
+                    {
+                        "direction": direction,
+                        "seed_count": update.seed_count,
+                        "raw_candidate_count": update.raw_candidate_count,
+                        "discovered_paper_count": update.candidate_count,
+                        "relation_count": update.relation_count,
+                    }
+                    for direction, update in zip(result.directions, result.results)
+                ],
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
 @graph_app.command("candidates")
 def graph_candidates(
     direction: str,
@@ -749,6 +818,56 @@ def graph_candidates(
                 "library_root": str(resolved_library_root),
                 "output_path": str(output_path),
                 "candidate_count": payload.get("candidate_count"),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
+@graph_app.command("snapshot")
+def graph_snapshot(
+    direction: str,
+    library_root: Path | None = typer.Option(None, "--library-root"),
+    limit: int = typer.Option(100, "--limit"),
+) -> None:
+    resolved_library_root = resolve_library_root(library_root)
+    output_path = export_graph_snapshot(
+        library_root=resolved_library_root,
+        direction=direction,
+        limit=limit,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "direction": direction,
+                "library_root": str(resolved_library_root),
+                "output_path": str(output_path),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
+@graph_app.command("map")
+def graph_map(
+    direction: str,
+    library_root: Path | None = typer.Option(None, "--library-root"),
+    limit: int = typer.Option(100, "--limit"),
+) -> None:
+    resolved_library_root = resolve_library_root(library_root)
+    output_path = export_literature_map(
+        library_root=resolved_library_root,
+        direction=direction,
+        limit=limit,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "direction": direction,
+                "library_root": str(resolved_library_root),
+                "output_path": str(output_path),
             },
             indent=2,
             ensure_ascii=False,
@@ -791,6 +910,48 @@ def graph_review(
                 "library_root": str(resolved_library_root),
                 "db_path": str(result.db_path),
                 "reviewed_count": result.reviewed_count,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
+@graph_app.command("enqueue-downloads")
+def graph_enqueue_downloads(
+    direction: str,
+    library_root: Path | None = typer.Option(None, "--library-root"),
+    decision: str = typer.Option(
+        "fetch",
+        "--decision",
+        help="Latest LLM review decision to enqueue.",
+    ),
+    priority: str | None = typer.Option(
+        None,
+        "--priority",
+        help="Optional latest LLM review priority filter, e.g. high.",
+    ),
+    limit: int = typer.Option(5, "--limit"),
+) -> None:
+    resolved_library_root = resolve_library_root(library_root)
+    result = enqueue_graph_downloads(
+        library_root=resolved_library_root,
+        direction=direction,
+        decision=decision,
+        priority=priority,
+        limit=limit,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "direction": direction,
+                "library_root": str(resolved_library_root),
+                "db_path": str(result.db_path),
+                "selected_count": result.selected_count,
+                "downloaded_count": result.downloaded_count,
+                "manual_required_count": result.manual_required_count,
+                "failed_count": result.failed_count,
+                "requests": result.requests,
             },
             indent=2,
             ensure_ascii=False,
@@ -1060,6 +1221,8 @@ def fetch(
             model=model,
             base_url=base_url,
         ),
+        after_processed=_graph_after_processed(resolved_library_root),
+        after_failed=_graph_after_failed(resolved_library_root),
     )
 
     for entry in plan:

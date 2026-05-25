@@ -49,6 +49,16 @@
       "id": "paper-index",
       "prompt": "Rebuild the indexes for my papers directory.",
       "reason": "Paper indexes are managed by paper_ops."
+    },
+    {
+      "id": "citation-graph-next-papers",
+      "prompt": "Find candidate papers from the citation graph of papers I already downloaded.",
+      "reason": "Citation graph expansion, deterministic candidate screening, and optional LLM review are paper_ops workflows."
+    },
+    {
+      "id": "graph-enqueue-downloads",
+      "prompt": "Queue the graph-reviewed high-priority papers for download.",
+      "reason": "Graph-selected paper download execution should use paper_ops graph enqueue-downloads."
     }
   ],
   "should_not_trigger": [
@@ -76,6 +86,11 @@
       "id": "citation-style",
       "prompt": "Convert this bibliography to APA style.",
       "reason": "Citation formatting alone is not a paper_ops library operation."
+    },
+    {
+      "id": "citation-graph-concept-only",
+      "prompt": "Explain how citation graphs are used in literature review.",
+      "reason": "Concept explanation without operating on the paper_ops library does not require paper_ops."
     },
     {
       "id": "translate-snippet",

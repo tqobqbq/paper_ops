@@ -2,7 +2,7 @@
 
 ## Candidate To PDF
 
-1. Use Codex/Claude judgment for discovery and ranking; Python helpers are tools, not the main decision-maker.
+1. Use deterministic graph-backed screening before asking a model to rank candidates when candidates come from already downloaded papers.
 2. For each candidate, try legal OA resolution before manual intake.
 3. If a legal PDF is found, process it with explicit metadata and `--library-root`.
 4. If no legal PDF is found, create a manual request. Do not fail the candidate just because it needs user input.
@@ -20,6 +20,74 @@ paper-ops resolve-pdf \
 ```
 
 Use `PYTHONPATH=src python3 -m paper_ops ...` when the console script is not installed.
+
+## Citation Graph Discovery
+
+Separate graph maintenance from paper search decisions.
+
+Recommended loop:
+
+```bash
+paper-ops fetch "<query>" --top 5 --update-graph --library-root ./papers
+paper-ops graph candidates predictive_coding --library-root ./papers
+paper-ops graph review predictive_coding --library-root ./papers
+paper-ops graph enqueue-downloads predictive_coding --priority high --limit 5 --library-root ./papers
+```
+
+After new papers are downloaded and processed, update graph facts only:
+
+```bash
+paper-ops graph update predictive_coding --library-root ./papers
+```
+
+`graph update` records local papers, external IDs, reference/cited-by relations,
+relation contexts, and provider metadata. It dedupes paper identity at discovery
+time and does not select candidates or call the LLM.
+
+When the user is ready to search for the next papers, refresh/export candidates:
+
+```bash
+paper-ops graph candidates predictive_coding --library-root ./papers
+```
+
+This deterministic step builds the not-yet-downloaded candidate view from the
+database and writes `indexes/graph_candidates/<direction>.json`.
+
+Only call the LLM when the user explicitly asks for review/ranking:
+
+```bash
+paper-ops graph review predictive_coding --library-root ./papers
+```
+
+The review step sends compact candidate cards, records decision/priority/rationale
+in the graph database, and preserves previous queued/downloaded/skipped states.
+
+When LLM or human review marks candidates for download, enqueue them through the
+legal PDF funnel:
+
+```bash
+paper-ops graph enqueue-downloads predictive_coding --decision fetch --priority high --limit 5 --library-root ./papers
+```
+
+Successful legal downloads are queued for manual scan processing. If no legal PDF
+is found, create a manual request and mark the graph candidate `manual_required`.
+Manual scan callbacks update graph candidates to `downloaded` or `download_failed`.
+
+Use snapshots and maps when the user asks for history or a literature overview:
+
+```bash
+paper-ops graph snapshot predictive_coding --library-root ./papers
+paper-ops graph map predictive_coding --library-root ./papers
+```
+
+Use the shortcut only when the user asks for citation expansion now:
+
+```bash
+paper-ops expand-citations predictive_coding --library-root ./papers
+paper-ops expand-citations predictive_coding --rank --library-root ./papers
+```
+
+The `--rank` form calls the LLM; the no-rank form does not.
 
 ## Manual PDF Arrives
 

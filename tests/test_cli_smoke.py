@@ -204,8 +204,12 @@ def test_cli_lists_graph_subcommands():
     result = runner.invoke(app, ["graph", "--help"])
     assert result.exit_code == 0
     assert "update" in result.stdout
+    assert "sync" in result.stdout
     assert "candidates" in result.stdout
+    assert "snapshot" in result.stdout
+    assert "map" in result.stdout
     assert "review" in result.stdout
+    assert "enqueue-downloads" in result.stdout
 
 
 def test_manual_render_readme_uses_library_root(tmp_path: Path):

@@ -68,6 +68,24 @@ Summary state is tracked in:
 indexes/summary_ledger.json
 ```
 
+## Paper Graph
+
+The durable graph and derived candidate views live under `indexes/`:
+
+```text
+indexes/
+  paper_graph.sqlite                         # canonical project-level paper graph
+  graph_updates/<direction>.json             # latest graph fact update report
+  graph_candidates/<direction>.json          # latest deterministic candidate view
+  graph_snapshots/<direction>/<timestamp>.json # timestamped candidate snapshots
+  literature_maps/<direction>.json           # concept-grouped map export
+  candidate_expansions/<direction>.json      # legacy expansion artifact when present
+```
+
+Treat `paper_graph.sqlite` as canonical. JSON files are export/report artifacts.
+Do not hand-edit graph JSON to change candidate state; use CLI commands or package
+code that updates SQLite.
+
 Indexes are rebuilt with:
 
 ```bash

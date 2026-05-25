@@ -59,6 +59,8 @@ class ManualSweepResult:
 
 
 ManualProcessor = Callable[[Path, ManualDownloadRequest], ManualProcessResult]
+ManualProcessCallback = Callable[[ManualDownloadRequest, ManualProcessResult], None]
+ManualFailureCallback = Callable[[ManualDownloadRequest, Exception], None]
 
 
 def _utc_now() -> str:
@@ -297,6 +299,8 @@ def process_manual_downloads_once(
     library_root: Path,
     *,
     processor: ManualProcessor,
+    after_processed: ManualProcessCallback | None = None,
+    after_failed: ManualFailureCallback | None = None,
     now: str | None = None,
 ) -> ManualSweepResult:
     manual_root = _ensure_manual_dirs(library_root)
@@ -329,6 +333,8 @@ def process_manual_downloads_once(
         try:
             result = processor(matched_pdf, updated)
         except Exception as exc:
+            if after_failed is not None:
+                after_failed(updated, exc)
             failed = updated.model_copy(
                 update={
                     "status": "processing_failed",
@@ -353,6 +359,8 @@ def process_manual_downloads_once(
         )
         processed_path = manual_root / "processed" / request_path.name
         _dump_request(processed_path, processed)
+        if after_processed is not None:
+            after_processed(processed, result)
         claim_path.unlink(missing_ok=True)
         processed_count += 1
 
@@ -369,11 +377,18 @@ def watch_manual_downloads(
     *,
     processor: ManualProcessor,
     interval_seconds: int,
+    after_processed: ManualProcessCallback | None = None,
+    after_failed: ManualFailureCallback | None = None,
     max_iterations: int | None = None,
 ) -> None:
     iterations = 0
     while True:
-        process_manual_downloads_once(library_root, processor=processor)
+        process_manual_downloads_once(
+            library_root,
+            processor=processor,
+            after_processed=after_processed,
+            after_failed=after_failed,
+        )
         iterations += 1
         if max_iterations is not None and iterations >= max_iterations:
             return

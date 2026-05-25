@@ -1,6 +1,6 @@
 ---
 name: paper-ops
-description: "Use when asked to fetch, resolve, ingest, process, summarize, translate, index, or manually add research papers with paper_ops; use for legal OA PDF resolution, manual PDF intake, paper artifacts, direction/overview summaries, and paper_ops pipeline development."
+description: "Use when asked to fetch, resolve, ingest, process, summarize, translate, index, expand via citation graphs, review graph-backed paper candidates, or manually add research papers with paper_ops; use for legal OA PDF resolution, manual PDF intake, paper artifacts, project-level paper graph updates, direction/overview summaries, and paper_ops pipeline development."
 ---
 
 # Paper Ops
@@ -26,6 +26,7 @@ Default to the user's current project `./papers`, not the `paper_ops` source rep
 | User placed PDFs in manual inbox | Run one manual scan or start watcher; read `references/layout.md` |
 | Local PDF with metadata | Process the PDF into the library; read `references/commands.md` |
 | New single-paper summaries/artifacts | Process PDF or run pending summary flow; read `references/workflows.md` |
+| Citation graph expansion or finding next papers from downloaded papers | Use graph update/candidates/review separation; read `references/workflows.md` |
 | Direction summary or total overview | Use incremental summary commands; read `references/workflows.md` |
 | Stale README, indexes, ledger, or paths | Read `references/layout.md` and `references/commands.md` |
 | Code changes to `paper_ops` | Read `references/development.md` before editing |
@@ -35,6 +36,7 @@ Default to the user's current project `./papers`, not the `paper_ops` source rep
 
 - Use the vendored paper-search-cli funnel (`paper-ops fetch`, `paper-ops resolve-pdf`) for all PDF acquisition. It tries native sources, then PMC/Europe PMC/CORE/OpenAIRE, then Unpaywall, then a final DOI-targeted fallback.
 - If the funnel returns no PDF, create a manual download request instead of marking the paper failed.
+- Treat graph updates and candidate review as separate stages: updating the graph records paper/relation facts; candidate screening and LLM review happen only when explicitly requested.
 - Confirm before running commands that may call external model APIs or modify the default paper library when the user's intent, library root, or cost tolerance is ambiguous.
 - Never print full API keys from `/root/.codex/auth.json` or `~/.config/paper-search-cli/config.json`.
 

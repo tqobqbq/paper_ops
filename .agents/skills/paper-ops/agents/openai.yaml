@@ -1,4 +1,4 @@
 interface:
   display_name: "Paper Ops"
-  short_description: "Manage project-local paper libraries"
-  default_prompt: "Use $paper-ops to resolve legal paper PDFs, manage manual PDF intake, process local papers, update artifacts, summaries, ledgers, and indexes, or maintain the paper_ops pipeline."
+  short_description: "Manage paper libraries and graph-backed discovery"
+  default_prompt: "Use $paper-ops to resolve legal paper PDFs, manage manual PDF intake, process local papers, update artifacts, maintain project-level paper graphs, screen graph-backed candidates, review next-paper choices, update summaries, ledgers, and indexes, or maintain the paper_ops pipeline."

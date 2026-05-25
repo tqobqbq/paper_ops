@@ -46,6 +46,24 @@
       ]
     },
     {
+      "id": "citation-graph-next-papers",
+      "prompt": "Use the papers I already downloaded to find what I should read next.",
+      "expected": [
+        "updates graph facts separately from candidate selection",
+        "uses graph candidates for deterministic screening",
+        "calls graph review or another LLM ranking step only when explicitly requested"
+      ]
+    },
+    {
+      "id": "graph-download-loop",
+      "prompt": "Download the high-priority papers the graph review selected.",
+      "expected": [
+        "uses graph enqueue-downloads",
+        "routes PDFs through the legal paper-search funnel",
+        "records manual-required or download state back into the graph"
+      ]
+    },
+    {
       "id": "stale-readme",
       "prompt": "The manual download README is stale.",
       "expected": [

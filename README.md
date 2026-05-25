@@ -33,8 +33,12 @@ paper-ops resolve-pdf --doi 10.0/example       # try paper-search funnel, option
 paper-ops expand-citations predictive_coding   # citation/reference expansion from local papers
 paper-ops expand-citations predictive_coding --rank  # add LLM ranking after deterministic dedupe
 paper-ops graph update predictive_coding       # persist paper/relation facts into SQLite graph database
+paper-ops graph sync                           # update graph facts for all library directions
 paper-ops graph candidates predictive_coding   # deterministically refresh/export graph-backed candidates
 paper-ops graph review predictive_coding       # rank existing graph candidates with the configured LLM
+paper-ops graph enqueue-downloads predictive_coding --priority high
+paper-ops graph snapshot predictive_coding     # save a timestamped candidate snapshot
+paper-ops graph map predictive_coding          # export a concept-grouped literature map
 paper-ops summarize direction predictive_coding
 ```
 
@@ -49,4 +53,5 @@ external IDs, reference/cited-by relations, and relation contexts incrementally.
 Candidate selection is deferred until the next explicit search step
 (`graph candidates`, `graph review`, or `expand-citations`), so processing a newly
 downloaded batch does not immediately spend LLM calls or lock in a candidate list.
-LLM reviews are stored separately for auditability.
+LLM reviews, download attempts, manual-required states, queued/downloaded states,
+snapshots, and literature maps are stored separately for auditability.

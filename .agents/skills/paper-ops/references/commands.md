@@ -40,6 +40,15 @@ paper-ops manual watch --interval-seconds 1800 --library-root ./papers
 paper-ops summarize pending --library-root ./papers
 paper-ops summarize direction predictive_coding --library-root ./papers
 paper-ops summarize overview --library-root ./papers
+paper-ops graph update predictive_coding --library-root ./papers
+paper-ops graph sync --library-root ./papers
+paper-ops graph candidates predictive_coding --library-root ./papers
+paper-ops graph review predictive_coding --library-root ./papers
+paper-ops graph enqueue-downloads predictive_coding --priority high --limit 5 --library-root ./papers
+paper-ops graph snapshot predictive_coding --library-root ./papers
+paper-ops graph map predictive_coding --library-root ./papers
+paper-ops expand-citations predictive_coding --library-root ./papers
+paper-ops expand-citations predictive_coding --rank --library-root ./papers
 ```
 
 `paper-ops setup` runs `npm install && npm run build` in `vendor/paper-search-cli/`. It must succeed once before any command that calls paper-search (`fetch`, `discover --query`, `resolve-pdf`).
@@ -57,6 +66,8 @@ Commands likely to call model APIs or trigger model-heavy processing:
 - `manual watch` when a matching PDF is processed
 - `summarize direction`
 - `summarize overview`
+- `graph review`
+- `expand-citations --rank`
 - discovery flows that explicitly use Codex/Claude judgment
 
 Commands that are usually local or metadata/network oriented:
@@ -69,6 +80,12 @@ Commands that are usually local or metadata/network oriented:
 - `resolve-pdf` calls paper-search (network) but no LLM
 - `discover --source <feed-url>` (RSS only)
 - `discover --query <text>` (paper-search only, no LLM)
+- `graph update` calls citation metadata providers but no LLM; it records graph facts only.
+- `graph sync` runs graph updates across library directions; no LLM.
+- `graph candidates` refreshes the deterministic not-yet-downloaded candidate view from SQLite; no LLM.
+- `graph enqueue-downloads` uses paper-search network download resolution; no LLM.
+- `graph snapshot` and `graph map` export existing graph/candidate data; no LLM.
+- `expand-citations` without `--rank` updates graph facts and exports candidates; no LLM.
 
 Ask the user before running model/API-heavy commands when the request does not clearly authorize cost, network use, provider choice, or changes to the default library root.
 

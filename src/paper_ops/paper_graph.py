@@ -26,11 +26,27 @@ PROMPT_VERSION = "rank_citation_expansion_candidates.v1"
 PAPER_STATUS_ORDER = {
     "candidate": 10,
     "skipped": 20,
+    "download_failed": 25,
+    "manual_required": 28,
     "queued": 30,
     "downloaded": 40,
     "local": 50,
 }
-STICKY_CANDIDATE_STATES = {"llm_reviewed", "queued", "downloaded", "skipped"}
+STICKY_CANDIDATE_STATES = {
+    "llm_reviewed",
+    "manual_required",
+    "download_failed",
+    "queued",
+    "downloaded",
+    "skipped",
+}
+INACTIVE_CANDIDATE_STATES = {
+    "manual_required",
+    "download_failed",
+    "queued",
+    "downloaded",
+    "skipped",
+}
 
 
 @dataclass(frozen=True)
@@ -51,8 +67,36 @@ class GraphReviewResult:
     ranking: dict[str, object]
 
 
+@dataclass(frozen=True)
+class GraphEnqueueResult:
+    db_path: Path
+    selected_count: int
+    downloaded_count: int
+    manual_required_count: int
+    failed_count: int
+    requests: list[dict[str, object]]
+
+
+@dataclass(frozen=True)
+class GraphSyncResult:
+    db_path: Path
+    directions: list[str]
+    results: list[GraphUpdateResult]
+
+
 def graph_db_path(library_root: Path) -> Path:
     return library_root / "indexes" / GRAPH_DB_FILENAME
+
+
+def library_directions(library_root: Path) -> list[str]:
+    library_dir = library_root / "library"
+    if not library_dir.exists():
+        return []
+    return sorted(
+        path.name
+        for path in library_dir.iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    )
 
 
 def _utc_now() -> str:
@@ -254,12 +298,77 @@ def _intents_from_reasons(reasons: Iterable[str]) -> list[str]:
     return intents
 
 
+def _relation_intents_for_candidate(candidate: ExpansionCandidate) -> list[str]:
+    intents = _intents_from_reasons(candidate.reasons)
+    for label in _classify_relation_contexts(candidate.relationship_contexts):
+        if label not in intents:
+            intents.append(label)
+    return intents
+
+
+def _classify_relation_contexts(contexts: Iterable[str]) -> list[str]:
+    labels: list[str] = []
+    patterns = [
+        ("benchmark", ("baseline", "benchmark", "compare", "comparison", "outperform")),
+        ("method", ("method", "algorithm", "architecture", "model", "training")),
+        ("extension", ("extend", "builds on", "improves", "based on", "inspired by")),
+        ("contrast", ("however", "unlike", "contrast", "limitation", "fails")),
+        ("dataset", ("dataset", "corpus", "mnist", "cifar", "imagenet", "benchmark suite")),
+        ("theory", ("theory", "theoretical", "framework", "principle", "analysis")),
+        ("background", ("survey", "review", "background", "prior work", "related work")),
+    ]
+    for context in contexts:
+        lower = context.lower()
+        for label, keywords in patterns:
+            if any(keyword in lower for keyword in keywords) and label not in labels:
+                labels.append(label)
+    return labels
+
+
 def _description_for_candidate(candidate: ExpansionCandidate) -> str:
     if candidate.relationship_contexts:
         return candidate.relationship_contexts[0]
     if candidate.abstract:
         return candidate.abstract[:500]
     return "; ".join(candidate.reasons)
+
+
+def _augment_candidate_contexts_from_local_text(
+    seed: ExpansionSeed,
+    candidate: ExpansionCandidate,
+) -> list[str]:
+    texts: list[str] = []
+    for filename in (
+        "translation_zh.md",
+        "summary_zh.md",
+        "experiments_zh.md",
+        "relevance_to_my_research.md",
+    ):
+        path = seed.paper_dir / filename
+        if path.exists():
+            texts.append(path.read_text(encoding="utf-8", errors="ignore"))
+    if not texts:
+        return []
+
+    needles = []
+    doi = _normalize_doi(candidate.doi or candidate.source_ids.get("doi"))
+    if doi:
+        needles.append(doi)
+    title_terms = [
+        term
+        for term in _normalize_title(candidate.title).split()
+        if len(term) >= 5
+    ][:4]
+    contexts: list[str] = []
+    for sentence in re.split(r"(?<=[。！？.!?])\s+|\n+", "\n".join(texts)):
+        lower = sentence.lower()
+        if doi and doi in lower:
+            _append_unique(contexts, sentence.strip()[:800])
+        elif title_terms and sum(1 for term in title_terms if term in lower) >= 2:
+            _append_unique(contexts, sentence.strip()[:800])
+        if len(contexts) >= 3:
+            break
+    return contexts
 
 
 def _append_unique(values: list[str], value: str) -> None:
@@ -304,6 +413,44 @@ def _score_graph_candidate(
 
 def _priority_sort_key(priority: str | None) -> int:
     return {"high": 0, "medium": 1, "low": 2}.get(priority or "", 3)
+
+
+def _candidate_request_id(candidate: dict[str, object]) -> str:
+    from paper_ops.paths import slugify
+
+    year_part = str(candidate.get("year") or "unknown-year")
+    title_slug = slugify(str(candidate.get("title") or "paper")) or "paper"
+    return f"{year_part}-{title_slug[:64].rstrip('-') or 'paper'}"
+
+
+def _concept_terms(*texts: str, limit: int = 8) -> list[str]:
+    stopwords = {
+        "with",
+        "from",
+        "that",
+        "this",
+        "using",
+        "based",
+        "paper",
+        "method",
+        "model",
+        "study",
+        "results",
+        "analysis",
+        "learning",
+    }
+    counts: dict[str, int] = {}
+    for text in texts:
+        for token in re.findall(r"[a-z][a-z0-9-]{3,}", text.lower()):
+            if token in stopwords:
+                continue
+            counts[token] = counts.get(token, 0) + 1
+    return [
+        term
+        for term, _count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[
+            :limit
+        ]
+    ]
 
 
 class PaperGraphStore:
@@ -497,6 +644,14 @@ class PaperGraphStore:
     ) -> str:
         now = _utc_now()
         normalized_doi = _normalize_doi(doi) or None
+        normalized_title = _normalize_title(title)
+        paper_key = self._canonicalize_paper_key(
+            paper_key=paper_key,
+            normalized_title=normalized_title,
+            year=year,
+            normalized_doi=normalized_doi,
+            source_ids=source_ids,
+        )
         row = self.conn.execute(
             "SELECT status FROM papers WHERE paper_key = ?",
             (paper_key,),
@@ -554,7 +709,7 @@ class PaperGraphStore:
                 paper_key,
                 local_paper_id,
                 title,
-                _normalize_title(title),
+                normalized_title,
                 year,
                 normalized_doi,
                 venue,
@@ -575,6 +730,204 @@ class PaperGraphStore:
             if value:
                 self.record_external_id(paper_key, source, value, now=now)
         return paper_key
+
+    def _canonicalize_paper_key(
+        self,
+        *,
+        paper_key: str,
+        normalized_title: str,
+        year: int | None,
+        normalized_doi: str | None,
+        source_ids: dict[str, str],
+    ) -> str:
+        exact = self.conn.execute(
+            "SELECT paper_key FROM papers WHERE paper_key = ?",
+            (paper_key,),
+        ).fetchone()
+        if exact is not None:
+            return paper_key
+
+        existing = self._paper_key_from_external_ids(
+            normalized_doi=normalized_doi,
+            source_ids=source_ids,
+        )
+        if existing:
+            return existing
+
+        if not normalized_title:
+            return paper_key
+
+        row = self.conn.execute(
+            """
+            SELECT paper_key
+            FROM papers
+            WHERE normalized_title = ?
+              AND (year = ? OR year IS NULL OR ? IS NULL)
+            ORDER BY
+              CASE
+                WHEN doi IS NOT NULL AND doi != '' THEN 0
+                WHEN paper_key LIKE 'semantic_scholar:%' THEN 1
+                WHEN paper_key LIKE 'title_year:%' THEN 2
+                ELSE 3
+              END,
+              updated_at DESC
+            LIMIT 1
+            """,
+            (normalized_title, year, year),
+        ).fetchone()
+        if row is None:
+            return paper_key
+
+        existing_key = str(row["paper_key"])
+        if self._identity_strength(paper_key) > self._identity_strength(existing_key):
+            self._merge_paper_keys(source_key=existing_key, target_key=paper_key)
+            return paper_key
+        return existing_key
+
+    def _paper_key_from_external_ids(
+        self,
+        *,
+        normalized_doi: str | None,
+        source_ids: dict[str, str],
+    ) -> str | None:
+        lookups: list[tuple[str, str]] = []
+        if normalized_doi:
+            lookups.append(("doi", normalized_doi))
+        for source, external_id in sorted(source_ids.items()):
+            value = str(external_id).strip()
+            if value:
+                lookups.append((source, value))
+        for source, external_id in lookups:
+            row = self.conn.execute(
+                """
+                SELECT paper_key
+                FROM paper_external_ids
+                WHERE source = ? AND external_id = ?
+                """,
+                (source, external_id),
+            ).fetchone()
+            if row is not None:
+                return str(row["paper_key"])
+        return None
+
+    def _identity_strength(self, paper_key: str) -> int:
+        if paper_key.startswith("doi:"):
+            return 100
+        if paper_key.startswith("semantic_scholar:"):
+            return 80
+        if paper_key.startswith("semantic_scholar_corpus_id:"):
+            return 75
+        if paper_key.startswith(("openalex:", "arxiv:", "pubmed:", "pmc:")):
+            return 70
+        if paper_key.startswith("title_year:"):
+            return 20
+        return 10
+
+    def _merge_paper_keys(self, *, source_key: str, target_key: str) -> None:
+        if source_key == target_key:
+            return
+        target_exists = self.conn.execute(
+            "SELECT 1 FROM papers WHERE paper_key = ?",
+            (target_key,),
+        ).fetchone()
+        if target_exists is None:
+            self.conn.execute(
+                """
+                INSERT INTO papers (
+                  paper_key,
+                  local_paper_id,
+                  title,
+                  normalized_title,
+                  year,
+                  doi,
+                  venue,
+                  abstract,
+                  url,
+                  authors_json,
+                  status,
+                  local_dir,
+                  metadata_json,
+                  created_at,
+                  updated_at
+                )
+                SELECT
+                  ?,
+                  local_paper_id,
+                  title,
+                  normalized_title,
+                  year,
+                  doi,
+                  venue,
+                  abstract,
+                  url,
+                  authors_json,
+                  status,
+                  local_dir,
+                  metadata_json,
+                  created_at,
+                  ?
+                FROM papers
+                WHERE paper_key = ?
+                """,
+                (target_key, _utc_now(), source_key),
+            )
+        self.conn.execute(
+            "UPDATE paper_relations SET source_paper_key = ? WHERE source_paper_key = ?",
+            (target_key, source_key),
+        )
+        self.conn.execute(
+            "UPDATE paper_relations SET target_paper_key = ? WHERE target_paper_key = ?",
+            (target_key, source_key),
+        )
+        self.conn.execute(
+            """
+            UPDATE candidates
+            SET paper_key = ?, updated_at = ?
+            WHERE paper_key = ?
+              AND NOT EXISTS (
+                SELECT 1
+                FROM candidates existing
+                WHERE existing.direction = candidates.direction
+                  AND existing.paper_key = ?
+              )
+            """,
+            (target_key, _utc_now(), source_key, target_key),
+        )
+        self.conn.execute(
+            "DELETE FROM candidates WHERE paper_key = ?",
+            (source_key,),
+        )
+        external_rows = self.conn.execute(
+            """
+            SELECT source, external_id, created_at
+            FROM paper_external_ids
+            WHERE paper_key = ?
+            """,
+            (source_key,),
+        ).fetchall()
+        for row in external_rows:
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO paper_external_ids(
+                  paper_key,
+                  source,
+                  external_id,
+                  created_at
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    target_key,
+                    row["source"],
+                    row["external_id"],
+                    row["created_at"],
+                ),
+            )
+        self.conn.execute(
+            "DELETE FROM paper_external_ids WHERE paper_key = ?",
+            (source_key,),
+        )
+        self.conn.execute("DELETE FROM papers WHERE paper_key = ?", (source_key,))
 
     def record_external_id(
         self,
@@ -725,7 +1078,14 @@ class PaperGraphStore:
               generated_from = excluded.generated_from,
               deterministic_score = excluded.deterministic_score,
               state = CASE
-                WHEN candidates.state IN ('llm_reviewed', 'queued', 'downloaded', 'skipped')
+                WHEN candidates.state IN (
+                  'llm_reviewed',
+                  'manual_required',
+                  'download_failed',
+                  'queued',
+                  'downloaded',
+                  'skipped'
+                )
                   THEN candidates.state
                 ELSE excluded.state
               END,
@@ -749,6 +1109,83 @@ class PaperGraphStore:
             ),
         )
         return candidate_id
+
+    def update_candidate_state(self, candidate_id: str, state: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE candidates
+            SET state = ?, updated_at = ?
+            WHERE candidate_id = ?
+            """,
+            (state, _utc_now(), candidate_id),
+        )
+
+    def record_download_attempt(
+        self,
+        *,
+        candidate_id: str,
+        source: str,
+        result: str,
+        pdf_path: Path | None = None,
+        error: str | None = None,
+    ) -> str:
+        now = _utc_now()
+        attempt_id = _stable_hash(
+            f"{candidate_id}\n{source}\n{result}\n{pdf_path or ''}\n{error or ''}\n{now}",
+            length=24,
+        )
+        self.conn.execute(
+            """
+            INSERT INTO download_attempts (
+              attempt_id,
+              candidate_id,
+              source,
+              result,
+              pdf_path,
+              error,
+              created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                attempt_id,
+                candidate_id,
+                source,
+                result,
+                str(pdf_path) if pdf_path is not None else None,
+                error,
+                now,
+            ),
+        )
+        return attempt_id
+
+    def mark_candidate_processed(
+        self,
+        *,
+        candidate_id: str,
+        local_paper_id: str,
+        paper_dir: Path,
+    ) -> None:
+        row = self.conn.execute(
+            "SELECT paper_key FROM candidates WHERE candidate_id = ?",
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            return
+        now = _utc_now()
+        paper_key = str(row["paper_key"])
+        self.conn.execute(
+            """
+            UPDATE papers
+            SET status = 'local',
+                local_paper_id = ?,
+                local_dir = ?,
+                updated_at = ?
+            WHERE paper_key = ?
+            """,
+            (local_paper_id, str(paper_dir), now, paper_key),
+        )
+        self.update_candidate_state(candidate_id, "downloaded")
 
     def refresh_candidates_from_graph(
         self,
@@ -799,7 +1236,13 @@ class PaperGraphStore:
               AND p.status NOT IN ('local', 'downloaded', 'skipped')
               AND (
                 c.state IS NULL
-                OR c.state NOT IN ('queued', 'downloaded', 'skipped')
+                OR c.state NOT IN (
+                  'manual_required',
+                  'download_failed',
+                  'queued',
+                  'downloaded',
+                  'skipped'
+                )
               )
             GROUP BY p.paper_key
             """,
@@ -835,6 +1278,15 @@ class PaperGraphStore:
             source_ids = self.external_ids_for_paper(paper_key)
             if row["doi"]:
                 source_ids.setdefault("doi", str(row["doi"]))
+            _append_unique(
+                reasons,
+                (
+                    "graph evidence: "
+                    f"{int(row['source_count'] or 0)} local source papers, "
+                    f"{int(row['relation_count'] or 0)} relations, "
+                    f"{len(contexts)} citation contexts"
+                ),
+            )
             payload = {
                 "title": row["title"],
                 "year": row["year"],
@@ -996,7 +1448,15 @@ class PaperGraphStore:
             state_clause = "AND c.state = ?"
             params.append(state)
         else:
-            state_clause = "AND c.state NOT IN ('queued', 'downloaded', 'skipped')"
+            state_clause = (
+                "AND c.state NOT IN ("
+                "'manual_required', "
+                "'download_failed', "
+                "'queued', "
+                "'downloaded', "
+                "'skipped'"
+                ")"
+            )
         params.append(limit)
         rows = self.conn.execute(
             f"""
@@ -1128,6 +1588,31 @@ class PaperGraphStore:
             candidates.append(_candidate_from_payload(payload))
         return candidates
 
+    def reviewed_candidates_for_download(
+        self,
+        *,
+        direction: str,
+        decision: str = "fetch",
+        priority: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, object]]:
+        rows = self.list_candidates(direction=direction, limit=max(limit * 5, limit))
+        selected: list[dict[str, object]] = []
+        for row in rows:
+            review = row.get("latest_review")
+            if not isinstance(review, dict):
+                continue
+            if str(review.get("decision") or "") != decision:
+                continue
+            if priority and str(review.get("priority") or "") != priority:
+                continue
+            if str(row.get("candidate_state") or "") in INACTIVE_CANDIDATE_STATES:
+                continue
+            selected.append(row)
+            if len(selected) >= limit:
+                break
+        return selected
+
     def commit(self) -> None:
         self.conn.commit()
 
@@ -1252,6 +1737,8 @@ def update_graph_for_direction(
         for seed in seeds:
             seed_key = store.upsert_seed(seed)
             for candidate in resolved_provider.candidates_for_seed(seed):
+                for context in _augment_candidate_contexts_from_local_text(seed, candidate):
+                    _append_unique(candidate.relationship_contexts, context)
                 target_key = store.upsert_candidate_paper(candidate)
                 discovered_paper_keys.add(target_key)
                 raw_candidates.append(candidate)
@@ -1262,7 +1749,7 @@ def update_graph_for_direction(
                     direction=direction,
                     relation_type=relation_type,
                     contexts=candidate.relationship_contexts,
-                    intents=_intents_from_reasons(candidate.reasons),
+                    intents=_relation_intents_for_candidate(candidate),
                     description=_description_for_candidate(candidate),
                     provider=provider_name,
                     confidence=0.9 if candidate.relationship_contexts else 0.6,
@@ -1290,6 +1777,29 @@ def update_graph_for_direction(
         candidate_count=len(discovered_paper_keys),
         llm_review_count=0,
         relation_count=relation_count,
+    )
+
+
+def sync_graph(
+    *,
+    library_root: Path,
+    provider_factory: Any | None = None,
+) -> GraphSyncResult:
+    directions = library_directions(library_root)
+    results: list[GraphUpdateResult] = []
+    for direction in directions:
+        provider = provider_factory() if provider_factory is not None else None
+        results.append(
+            update_graph_for_direction(
+                library_root=library_root,
+                direction=direction,
+                provider=provider,
+            )
+        )
+    return GraphSyncResult(
+        db_path=graph_db_path(library_root),
+        directions=directions,
+        results=results,
     )
 
 
@@ -1339,6 +1849,200 @@ def review_graph_candidates(
     )
 
 
+def mark_graph_candidate_processed(
+    *,
+    library_root: Path,
+    candidate_id: str,
+    local_paper_id: str,
+    paper_dir: Path,
+) -> None:
+    with PaperGraphStore(graph_db_path(library_root)) as store:
+        store.mark_candidate_processed(
+            candidate_id=candidate_id,
+            local_paper_id=local_paper_id,
+            paper_dir=paper_dir,
+        )
+        store.commit()
+
+
+def mark_graph_candidate_processing_failed(
+    *,
+    library_root: Path,
+    candidate_id: str,
+    error: str,
+) -> None:
+    with PaperGraphStore(graph_db_path(library_root)) as store:
+        store.update_candidate_state(candidate_id, "download_failed")
+        store.record_download_attempt(
+            candidate_id=candidate_id,
+            source="manual-scan",
+            result="processing_failed",
+            error=error,
+        )
+        store.commit()
+
+
+def enqueue_graph_downloads(
+    *,
+    library_root: Path,
+    direction: str,
+    decision: str = "fetch",
+    priority: str | None = None,
+    limit: int = 5,
+    client: Any | None = None,
+) -> GraphEnqueueResult:
+    from paper_ops.manual_downloads import (
+        ManualDownloadRequest,
+        create_manual_download_request,
+    )
+    from paper_ops.paper_search_client import PaperSearchClient, PaperSearchError
+
+    resolved_client = client or PaperSearchClient()
+    inbox_dir = library_root / "manual_downloads" / "inbox"
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    requests: list[dict[str, object]] = []
+    downloaded_count = 0
+    manual_required_count = 0
+    failed_count = 0
+
+    db_path = graph_db_path(library_root)
+    with PaperGraphStore(db_path) as store:
+        candidates = store.reviewed_candidates_for_download(
+            direction=direction,
+            decision=decision,
+            priority=priority,
+            limit=limit,
+        )
+        for candidate in candidates:
+            candidate_id = str(candidate["candidate_id"])
+            request_id = _candidate_request_id(candidate)
+            expected_filename = f"{request_id}.pdf"
+            source_ids = candidate.get("source_ids")
+            paper_id = (
+                str(candidate.get("doi") or "")
+                or str((source_ids or {}).get("semantic_scholar") or "")
+                if isinstance(source_ids, dict)
+                else str(candidate.get("doi") or "")
+            )
+            if not paper_id:
+                paper_id = str(candidate.get("paper_key") or candidate_id)
+            request = ManualDownloadRequest(
+                request_id=request_id,
+                title=str(candidate.get("title") or "Untitled"),
+                authors=[
+                    str(author)
+                    for author in candidate.get("authors", [])
+                    if str(author).strip()
+                ]
+                if isinstance(candidate.get("authors"), list)
+                else [],
+                year=(
+                    candidate.get("year")
+                    if isinstance(candidate.get("year"), int)
+                    else None
+                ),
+                venue=(
+                    str(candidate.get("venue"))
+                    if candidate.get("venue") is not None
+                    else None
+                ),
+                doi=(
+                    str(candidate.get("doi"))
+                    if candidate.get("doi") is not None
+                    else None
+                ),
+                direction=direction,
+                abstract=str(candidate.get("abstract") or ""),
+                candidate_id=candidate_id,
+                source_url=(
+                    str(candidate.get("url"))
+                    if candidate.get("url") is not None
+                    else None
+                ),
+                legal_pdf_attempts=[],
+                expected_filenames=[expected_filename],
+            )
+            try:
+                pdf_path = resolved_client.download_with_fallback(
+                    source="semantic",
+                    paper_id=paper_id,
+                    doi=request.doi,
+                    title=request.title,
+                    save_path=inbox_dir,
+                )
+            except PaperSearchError as exc:
+                create_manual_download_request(library_root, request)
+                store.record_download_attempt(
+                    candidate_id=candidate_id,
+                    source="paper-search",
+                    result="manual_required",
+                    error=str(exc),
+                )
+                store.update_candidate_state(candidate_id, "manual_required")
+                manual_required_count += 1
+                requests.append(
+                    {
+                        "candidate_id": candidate_id,
+                        "request_id": request_id,
+                        "result": "manual_required",
+                        "error": str(exc),
+                    }
+                )
+                continue
+            except Exception as exc:
+                store.record_download_attempt(
+                    candidate_id=candidate_id,
+                    source="paper-search",
+                    result="failed",
+                    error=str(exc),
+                )
+                store.update_candidate_state(candidate_id, "download_failed")
+                failed_count += 1
+                requests.append(
+                    {
+                        "candidate_id": candidate_id,
+                        "request_id": request_id,
+                        "result": "failed",
+                        "error": str(exc),
+                    }
+                )
+                continue
+
+            target_path = inbox_dir / expected_filename
+            if pdf_path != target_path and pdf_path.exists():
+                if target_path.exists():
+                    target_path.unlink()
+                pdf_path.rename(target_path)
+                pdf_path = target_path
+            create_manual_download_request(library_root, request)
+            store.record_download_attempt(
+                candidate_id=candidate_id,
+                source="paper-search",
+                result="downloaded",
+                pdf_path=pdf_path,
+            )
+            store.update_candidate_state(candidate_id, "queued")
+            downloaded_count += 1
+            requests.append(
+                {
+                    "candidate_id": candidate_id,
+                    "request_id": request_id,
+                    "result": "queued",
+                    "pdf_path": str(pdf_path),
+                }
+            )
+        store.commit()
+
+    return GraphEnqueueResult(
+        db_path=db_path,
+        selected_count=len(requests),
+        downloaded_count=downloaded_count,
+        manual_required_count=manual_required_count,
+        failed_count=failed_count,
+        requests=requests,
+    )
+
+
 def export_graph_candidates(
     *,
     library_root: Path,
@@ -1368,6 +2072,90 @@ def export_graph_candidates(
                 "database": str(db_path),
                 "candidate_count": len(candidates),
                 "state": state,
+                "candidates": candidates,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return output_path
+
+
+def export_graph_snapshot(
+    *,
+    library_root: Path,
+    direction: str,
+    limit: int = 100,
+) -> Path:
+    candidate_path = export_graph_candidates(
+        library_root=library_root,
+        direction=direction,
+        limit=limit,
+    )
+    payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+    timestamp = _utc_now().replace(":", "").replace("+", "Z")
+    output_dir = library_root / "indexes" / "graph_snapshots" / direction
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{timestamp}.json"
+    payload["snapshot_created_at"] = _utc_now()
+    output_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return output_path
+
+
+def export_literature_map(
+    *,
+    library_root: Path,
+    direction: str,
+    limit: int = 100,
+) -> Path:
+    db_path = graph_db_path(library_root)
+    with PaperGraphStore(db_path) as store:
+        store.refresh_candidates_from_graph(direction=direction, limit=limit)
+        store.commit()
+        candidates = store.list_candidates(direction=direction, limit=limit)
+
+    concept_index: dict[str, list[dict[str, object]]] = {}
+    for candidate in candidates:
+        contexts = candidate.get("relationship_contexts")
+        context_text = " ".join(contexts if isinstance(contexts, list) else [])
+        terms = _concept_terms(
+            str(candidate.get("title") or ""),
+            str(candidate.get("abstract") or ""),
+            context_text,
+            limit=5,
+        )
+        for term in terms:
+            concept_index.setdefault(term, []).append(
+                {
+                    "candidate_id": candidate["candidate_id"],
+                    "title": candidate["title"],
+                    "year": candidate.get("year"),
+                    "score": candidate.get("deterministic_score"),
+                    "latest_review": candidate.get("latest_review"),
+                }
+            )
+
+    concepts = [
+        {"concept": concept, "paper_count": len(items), "papers": items[:10]}
+        for concept, items in sorted(
+            concept_index.items(),
+            key=lambda item: (-len(item[1]), item[0]),
+        )
+    ]
+    output_path = library_root / "indexes" / "literature_maps" / f"{direction}.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(
+            {
+                "direction": direction,
+                "created_at": _utc_now(),
+                "candidate_count": len(candidates),
+                "concepts": concepts,
                 "candidates": candidates,
             },
             indent=2,
