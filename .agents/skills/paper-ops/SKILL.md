@@ -1,6 +1,6 @@
 ---
 name: paper-ops
-description: "Use when asked to fetch, resolve, ingest, process, summarize, translate, index, expand via citation graphs, review graph-backed paper candidates, or manually add research papers with paper_ops; use for legal OA PDF resolution, manual PDF intake, paper artifacts, project-level paper graph updates, direction/overview summaries, and paper_ops pipeline development."
+description: "Use for paper_ops workflows: legal paper PDF resolution, manual PDF intake, local paper processing, graph-backed citation discovery/review/download, summaries, indexes, and paper_ops pipeline development."
 ---
 
 # Paper Ops
@@ -21,13 +21,13 @@ Default to the user's current project `./papers`, not the `paper_ops` source rep
 
 | User asks for | Do first |
 | --- | --- |
-| DOI, URL, title, or candidate paper | Resolve legal OA sources; read `references/workflows.md` |
+| DOI, URL, title, or candidate paper | Resolve legal OA sources; read `references/intake.md` |
 | No legal PDF found | Create/update a manual request; read `references/policies.md` |
 | User placed PDFs in manual inbox | Run one manual scan or start watcher; read `references/layout.md` |
 | Local PDF with metadata | Process the PDF into the library; read `references/commands.md` |
-| New single-paper summaries/artifacts | Process PDF or run pending summary flow; read `references/workflows.md` |
-| Citation graph expansion or finding next papers from downloaded papers | Use graph update/candidates/review separation; read `references/workflows.md` |
-| Direction summary or total overview | Use incremental summary commands; read `references/workflows.md` |
+| New single-paper summaries/artifacts | Process PDF or run pending summary flow; read `references/intake.md` or `references/summaries.md` |
+| Citation graph expansion or finding next papers from downloaded papers | Use graph update/candidates/review separation; read `references/graph.md` |
+| Direction summary or total overview | Use incremental summary commands; read `references/summaries.md` |
 | Stale README, indexes, ledger, or paths | Read `references/layout.md` and `references/commands.md` |
 | Code changes to `paper_ops` | Read `references/development.md` before editing |
 | Skill quality, packaging, or validation | Read `references/validation.md` |
@@ -58,7 +58,10 @@ Use `references/commands.md` for concrete commands and model-call boundaries.
 
 ## Reference Map
 
-- `references/workflows.md`: end-to-end discovery, PDF acquisition, processing, and summary workflows.
+- `references/workflows.md`: short router for choosing the right detailed workflow reference.
+- `references/intake.md`: legal PDF acquisition, manual intake, local PDF processing, and queue/batch work.
+- `references/graph.md`: graph update/candidates/review/enqueue, snapshots, maps, and citation expansion.
+- `references/summaries.md`: pending, direction, and overview summary workflows.
 - `references/commands.md`: command defaults, installed-vs-source fallback, and external API/model-call notes.
 - `references/layout.md`: project-local library layout, manual download state, generated artifacts, and direction slugs.
 - `references/policies.md`: legal PDF policy, manual intake rules, and human-readable README behavior.
